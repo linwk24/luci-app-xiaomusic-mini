@@ -9,6 +9,20 @@
 - Python 后端：`/usr/lib/xiaomusic-mini/main.py`（+ `plugins/`）
 - procd 服务：`/etc/init.d/xiaomusic-mini`（开机自启，未填账号密码时自动跳过启动）
 
+## 下载 / 安装预编译包
+
+不想自己编译的话，直接到 **[Releases](https://github.com/linwk24/luci-app-xiaomusic-mini/releases)** 下载最新的
+`luci-app-xiaomusic-mini_<版本>_all.ipk`，然后：
+
+```sh
+opkg install luci-app-xiaomusic-mini_1.0.1-r1_all.ipk
+# 或在 LuCI → 系统 → 软件包 → 上传安装
+```
+
+- `Architecture: all`，硬依赖只有 `luci-base`；
+- Python 运行时/第三方库不随包编译，装好后到「环境检测」一键安装（opkg/pip）；
+- 升级保留 `/opt/xiaomusic-mini/config.json`、`mi.token` 与日志，`postinst` 会自动重启服务。
+
 ## 目录 ↔ 安装路径
 
 | 源码路径 | 安装到设备 | 说明 |
