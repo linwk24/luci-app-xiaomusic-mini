@@ -1,3 +1,6 @@
+<img width="827" height="886" alt="Screenshot (2)" src="https://github.com/user-attachments/assets/e16dd255-670a-4616-a28e-4b26c672d32d" />
+<img width="1590" height="808" alt="Screenshot (1)" src="https://github.com/user-attachments/assets/d86b1104-c042-496b-a2c8-30a1b89edce3" />
+
 # luci-app-xiaomusic-mini
 
 小爱音箱「语音点播本地音乐」的 **LuCI 应用 + 内置 Python 后端** 一体化软件包。
