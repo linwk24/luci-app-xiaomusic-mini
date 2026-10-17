@@ -1,0 +1,63 @@
+#!/bin/sh /etc/rc.common
+# xiaomusic-mini —— 小爱音箱语音点播（OpenWrt procd 服务）
+# 程序随 luci-app-xiaomusic-mini 安装: /usr/lib/xiaomusic-mini/main.py
+# 配置/token/日志: /opt/xiaomusic-mini/
+#
+# 未填写小米账号密码时不启动（避免无意义的重启循环），
+# 在 LuCI「服务 → 小爱音乐 Mini → 配置」里填写并保存即可。
+
+START=95
+STOP=10
+USE_PROCD=1
+
+PROG=/usr/lib/xiaomusic-mini/main.py
+CONF=/opt/xiaomusic-mini/config.json
+TEMPLATE=/usr/share/xiaomusic-mini/config.json
+
+PY=""
+
+find_python() {
+	if [ -n "$PY" ] && [ -x "$PY" ]; then
+		return 0
+	fi
+	PY="$(command -v python3 2>/dev/null || command -v python3.11 2>/dev/null)"
+	[ -n "$PY" ]
+}
+
+config_ready() {
+	[ -f "$CONF" ] || return 1
+	find_python || return 1
+	"$PY" -c 'import json, sys
+c = json.load(open(sys.argv[1], encoding="utf-8"))
+ok = bool(str(c.get("account") or "").strip() and str(c.get("password") or "").strip())
+sys.exit(0 if ok else 1)' "$CONF" 2>/dev/null
+}
+
+start_service() {
+	find_python || {
+		logger -t xiaomusic-mini "未找到 python3，无法启动（请先安装 python3-light）"
+		return 1
+	}
+
+	mkdir -p /opt/xiaomusic-mini
+	if [ ! -f "$CONF" ] && [ -f "$TEMPLATE" ]; then
+		cp "$TEMPLATE" "$CONF"
+		chmod 600 "$CONF"
+	fi
+	if [ ! -f "$CONF" ]; then
+		logger -t xiaomusic-mini "配置文件不存在: $CONF"
+		return 1
+	fi
+	if ! config_ready; then
+		logger -t xiaomusic-mini "未配置小米账号/密码，跳过启动（请在 LuCI 中填写并保存）"
+		return 1
+	fi
+
+	procd_open_instance
+	procd_set_param command "$PY" "$PROG" --config "$CONF"
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_set_param pidfile /var/run/xiaomusic-mini.pid
+	procd_close_instance
+}

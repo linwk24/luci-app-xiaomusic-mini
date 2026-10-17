@@ -1,0 +1,20 @@
+{
+  "account": "",
+  "password": "",
+  "mi_did": "",
+  "music_dir": "/mnt/sda1/music",
+  "http_port": 8091,
+  "http_host": "auto",
+  "poll_sec": 1.5,
+  "fuzzy_cutoff": 0.6,
+  "tts_enable": true,
+  "play_tts": false,
+  "use_music_audio_id": "1582971365183456177",
+  "token_path": "/opt/xiaomusic-mini/mi.token",
+  "log_file": "/opt/xiaomusic-mini/xiaomusic-mini.log",
+  "stop_tts_msg": "收到，再见",
+  "key_word_dict": {
+    "测试自定义口令": "exec#code1(\"hello\")",
+    "提醒我喝水": "exec#httpget(\"http://192.168.1.100:8089/ring\")"
+  }
+}

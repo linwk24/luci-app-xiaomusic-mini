@@ -1,0 +1,28 @@
+#!/bin/sh
+# luci-app-xiaomusic-mini 首次安装/首启初始化
+# 1) 创建数据目录 /opt/xiaomusic-mini
+# 2) 无配置时从模板生成（不覆盖已有配置）
+# 3) 修正可执行权限（防止打包/拷贝过程中丢失）
+# 4) 开机自启
+
+[ -n "${IPKG_INSTROOT:-}" ] && exit 0
+
+DATA=/opt/xiaomusic-mini
+TEMPLATE=/usr/share/xiaomusic-mini/config.json
+
+mkdir -p "$DATA"
+
+if [ ! -f "$DATA/config.json" ] && [ -f "$TEMPLATE" ]; then
+	cp "$TEMPLATE" "$DATA/config.json"
+	chmod 600 "$DATA/config.json"
+fi
+
+chmod 755 /etc/init.d/xiaomusic-mini 2>/dev/null
+chmod 755 /usr/libexec/xiaomusic-mini-check 2>/dev/null
+chmod 755 /usr/libexec/xiaomusic-mini-install 2>/dev/null
+chmod 755 /usr/libexec/xiaomusic-mini-log 2>/dev/null
+chmod 755 /usr/lib/xiaomusic-mini/main.py 2>/dev/null
+
+/etc/init.d/xiaomusic-mini enable 2>/dev/null
+
+exit 0

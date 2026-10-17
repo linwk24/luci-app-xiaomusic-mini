@@ -1,0 +1,193 @@
+#!/bin/sh
+# xiaomusic-mini 环境检测
+# 独立于后端运行（后端缺依赖时无法自检），输出 JSON 供 LuCI 页面渲染。
+# 用法: xiaomusic-mini-check           # 输出检测结果 JSON
+#       xiaomusic-mini-check --deps    # 仅输出"缺失依赖"的安装命令，每行一条
+
+PY="$(command -v python3 2>/dev/null || command -v python3.11 2>/dev/null)"
+
+if [ -z "$PY" ]; then
+	# 没有 python3 时也要支持 --deps（供「查看安装命令」使用）
+	if [ "${1:-}" = "--deps" ]; then
+		echo "is-opkg install python3"
+		echo "opkg install python3"
+		exit 0
+	fi
+	cat <<'EOF'
+{"ok":false,"env_ok":false,"python":null,"version":null,"checks":[{"id":"python3","label":"Python 3 运行时","ok":false,"detail":"未检测到 python3","fix":["is-opkg install python3","opkg install python3"]}]}
+EOF
+	exit 0
+fi
+
+exec "$PY" - "$@" <<'PYEOF'
+import json
+import os
+import re
+import sys
+
+CONF = "/opt/xiaomusic-mini/config.json"
+MAIN = "/usr/lib/xiaomusic-mini/main.py"
+
+# 模块名 -> (显示名, pip 包名, 安装命令)
+MODS = [
+    ("aiohttp",        "aiohttp",        "aiohttp",
+     ["is-opkg install python3-aiohttp", "python3 -m pip install aiohttp"]),
+    ("mutagen",        "mutagen",        "mutagen",
+     ["python3 -m pip install mutagen"]),
+    ("miservice",      "miservice-fork", "miservice-fork",
+     ["python3 -m pip install miservice-fork"]),
+    ("fake_useragent", "fake-useragent", "fake-useragent>=2.0",
+     ["python3 -m pip install fake-useragent"]),
+]
+
+# OpenWrt 把标准库拆成了多个包；这些模块缺失时后端连启动都做不到。
+# 不写进 ipk 硬依赖（避免编译固件时从源码编译 CPython），由页面/安装器在设备端 opkg 安装。
+STDLIB = [
+    ("asyncio",        "asyncio"),
+    ("logging",        "logging"),
+    ("email",          "email"),
+    ("urllib.request", "urllib"),
+    ("ssl",            "ssl"),
+]
+
+STDLIB_PKGS = "python3-asyncio python3-logging python3-email python3-urllib python3-openssl"
+
+DEP_IDS = {"python3", "backend", "pip", "stdlib"} | {m[0] for m in MODS}
+
+
+def module_ok(name):
+    try:
+        __import__(name)
+        return True
+    except Exception:
+        return False
+
+
+def pip_ok():
+    try:
+        import pip  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def backend_version():
+    try:
+        with open(MAIN, encoding="utf-8") as f:
+            m = re.search(r'^__version__\s*=\s*"([^"]+)"', f.read(), re.M)
+        return m.group(1) if m else None
+    except OSError:
+        return None
+
+
+def main():
+    deps_only = "--deps" in sys.argv[1:]
+    pyver = ".".join(str(x) for x in sys.version_info[:3])
+    version = backend_version()
+    checks = []
+
+    # 1. 解释器
+    checks.append({
+        "id": "python3", "label": "Python 3 运行时", "ok": True,
+        "detail": pyver, "fix": [],
+    })
+
+    # 2. 后端程序（本应用自带）
+    checks.append({
+        "id": "backend", "label": "后端程序 main.py",
+        "ok": os.path.isfile(MAIN),
+        "detail": (f"{MAIN}（v{version}）" if version else MAIN),
+        "fix": [],
+    })
+
+    # 3. pip（安装 miservice-fork 等 PyPI 依赖用）
+    has_pip = pip_ok()
+    checks.append({
+        "id": "pip", "label": "pip（依赖安装器）", "ok": has_pip,
+        "detail": "" if has_pip else "未安装，无法 pip 安装依赖",
+        "fix": [] if has_pip else ["is-opkg install python3-pip", "opkg install python3-pip"],
+    })
+
+    # 4. Python 标准库组件（OpenWrt 拆分包）
+    missing_std = [mod for mod, _ in STDLIB if not module_ok(mod)]
+    checks.append({
+        "id": "stdlib", "label": "Python 标准库组件",
+        "ok": not missing_std,
+        "detail": "齐全" if not missing_std else ("缺少: " + ", ".join(missing_std)),
+        "fix": [] if not missing_std else [
+            "is-opkg install " + STDLIB_PKGS,
+            "opkg install " + STDLIB_PKGS,
+        ],
+    })
+
+    # 5. 第三方 Python 依赖
+    for mod, label, _pkg, fix in MODS:
+        ok = module_ok(mod)
+        checks.append({
+            "id": mod, "label": label, "ok": ok,
+            "detail": "已安装" if ok else "未安装",
+            "fix": [] if ok else list(fix),
+        })
+
+    # 6. 配置
+    cfg = {}
+    cfg_ok = os.path.isfile(CONF)
+    if cfg_ok:
+        try:
+            with open(CONF, encoding="utf-8") as f:
+                cfg = json.load(f)
+        except Exception as e:
+            cfg = {}
+            cfg_ok = False
+            checks.append({
+                "id": "config", "label": "配置文件", "ok": False,
+                "detail": f"{CONF} 解析失败: {e}", "fix": [],
+            })
+    if cfg_ok:
+        checks.append({
+            "id": "config", "label": "配置文件", "ok": True,
+            "detail": CONF, "fix": [],
+        })
+    else:
+        if not any(c["id"] == "config" for c in checks):
+            checks.append({
+                "id": "config", "label": "配置文件", "ok": False,
+                "detail": f"{CONF} 不存在（保存一次配置即会创建）", "fix": [],
+            })
+
+    has_account = bool(str(cfg.get("account") or "").strip() and str(cfg.get("password") or "").strip())
+    checks.append({
+        "id": "account", "label": "小米账号", "ok": has_account,
+        "detail": "已填写" if has_account else "未填写（保存配置后自动重启生效）",
+        "fix": [],
+    })
+
+    music = str(cfg.get("music_dir") or "")
+    checks.append({
+        "id": "musicdir", "label": "音乐目录",
+        "ok": bool(music and os.path.isdir(music)),
+        "detail": music or "(未配置 music_dir)",
+        "fix": [],
+    })
+
+    env_ok = all(c["ok"] for c in checks if c["id"] in DEP_IDS)
+    result = {
+        "ok": all(c["ok"] for c in checks),
+        "env_ok": env_ok,
+        "python": pyver,
+        "version": version,
+        "checks": checks,
+    }
+
+    if deps_only:
+        for c in checks:
+            if not c["ok"]:
+                for cmd in c.get("fix", []):
+                    print(cmd)
+        return
+
+    print(json.dumps(result, ensure_ascii=False))
+
+
+main()
+PYEOF

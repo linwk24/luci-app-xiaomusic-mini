@@ -1,0 +1,13 @@
+{
+	"admin/services/xiaomusic-mini": {
+		"title": "小爱音乐 Mini",
+		"order": 60,
+		"action": {
+			"type": "view",
+			"path": "xiaomusic-mini/overview"
+		},
+		"depends": {
+			"acl": [ "luci-app-xiaomusic-mini" ]
+		}
+	}
+}

@@ -1,0 +1,188 @@
+#!/bin/sh
+# xiaomusic-mini 依赖安装器
+# 只接受白名单依赖 ID，后台执行，状态写入 /var/run 供 LuCI 轮询。
+#
+# 用法:
+#   xiaomusic-mini-install <id>        启动后台安装（立即返回，输出 started）
+#   xiaomusic-mini-install --status    输出状态: idle / running <id> / done <id> <rc>
+#   xiaomusic-mini-install --log       输出安装日志（最近 200 行）
+#
+# <id>: python3 pip aiohttp mutagen miservice fake_useragent
+
+set -u
+
+SELF="$0"
+case "$SELF" in
+	/*) ;;
+	*) SELF="$(cd "$(dirname "$SELF")" 2>/dev/null && pwd)/$(basename "$SELF")" ;;
+esac
+
+STATE=/var/run/xiaomusic-mini-install.state
+LOCK=/var/run/xiaomusic-mini-install.lock
+LOG=/var/log/xiaomusic-mini-install.log
+MIRROR=https://pypi.tuna.tsinghua.edu.cn/simple
+
+status() {
+	if [ -f "$STATE" ]; then
+		cat "$STATE"
+	else
+		echo "idle"
+	fi
+}
+
+detect_pkg() {
+	if command -v is-opkg >/dev/null 2>&1; then
+		echo is-opkg
+	elif command -v opkg >/dev/null 2>&1; then
+		echo opkg
+	fi
+}
+
+do_install() {
+	id="$1"
+	PKG="$(detect_pkg)"
+	echo "== 安装 $id ($(date))"
+	echo "== 包管理器: ${PKG:-无}"
+
+	opkg_install() {
+		[ -n "$PKG" ] || return 1
+		$PKG update || true
+		$PKG install "$1"
+	}
+
+	ensure_pip() {
+		if python3 -m pip --version >/dev/null 2>&1; then
+			return 0
+		fi
+		echo "== pip 未安装，先安装 python3-pip"
+		opkg_install python3-pip || return 1
+		python3 -m pip --version >/dev/null 2>&1
+	}
+
+	pip_install() {
+		ensure_pip || return 1
+		if python3 -m pip install --no-cache-dir -i "$MIRROR" "$@"; then
+			return 0
+		fi
+		echo "== 镜像源失败，改用默认源重试"
+		python3 -m pip install --no-cache-dir "$@"
+	}
+
+	verify() {
+		case "$id" in
+			python3) command -v python3 >/dev/null 2>&1 ;;
+			pip) python3 -m pip --version >/dev/null 2>&1 ;;
+			stdlib) python3 -c "import asyncio, logging, email, urllib.request, ssl" >/dev/null 2>&1 ;;
+			*) python3 -c "import $id" >/dev/null 2>&1 ;;
+		esac
+	}
+
+	case "$id" in
+		python3)
+			opkg_install python3 || opkg_install python3-light
+			;;
+		stdlib)
+			# OpenWrt 拆分的标准库组件；装不上则退回完整 python3 元包
+			if [ -n "$PKG" ]; then
+				$PKG update || true
+				$PKG install python3-asyncio python3-logging python3-email python3-urllib python3-openssl || \
+					$PKG install python3
+			else
+				echo "== 未找到 opkg/is-opkg，无法安装标准库组件"
+				false
+			fi
+			;;
+		pip)
+			ensure_pip
+			;;
+		aiohttp)
+			# 官方 feed 有 python3-aiohttp，优先 opkg，失败再 pip
+			opkg_install python3-aiohttp || pip_install aiohttp
+			;;
+		mutagen)
+			opkg_install python3-mutagen || pip_install mutagen
+			;;
+		miservice)
+			pip_install miservice-fork
+			;;
+		fake_useragent)
+			pip_install "fake-useragent>=2.0"
+			;;
+	esac
+	rc=$?
+
+	if [ "$rc" -eq 0 ] && ! verify; then
+		echo "== 校验失败: $id 仍不可用"
+		rc=1
+	fi
+	echo "== 结束 $id rc=$rc"
+	return "$rc"
+}
+
+case "${1:-}" in
+	--status|-s)
+		status
+		exit 0
+		;;
+	--log|-l)
+		if [ -f "$LOG" ]; then
+			tail -n 200 "$LOG"
+		else
+			echo "(暂无安装日志)"
+		fi
+		exit 0
+		;;
+	--run)
+		id="${2:-}"
+		case "$id" in
+			python3|stdlib|pip|aiohttp|mutagen|miservice|fake_useragent) ;;
+			*)
+				echo "不支持的依赖: ${id:-（空）}" >&2
+				exit 2
+				;;
+		esac
+		echo $$ > "$LOCK/pid" 2>/dev/null
+		trap 'rm -rf "$LOCK"' EXIT INT TERM
+		do_install "$id"
+		rc=$?
+		echo "done $id $rc" > "$STATE"
+		exit "$rc"
+		;;
+esac
+
+id="${1:-}"
+case "$id" in
+	python3|stdlib|pip|aiohttp|mutagen|miservice|fake_useragent) ;;
+	*)
+		echo "不支持的依赖: ${id:-（空）}" >&2
+		exit 2
+		;;
+esac
+
+mkdir -p /var/log /var/run
+
+# 用目录锁防并发；持有者进程已不存在时视为残留锁
+if ! mkdir "$LOCK" 2>/dev/null; then
+	opid="$(cat "$LOCK/pid" 2>/dev/null)"
+	if [ -n "$opid" ] && kill -0 "$opid" 2>/dev/null; then
+		echo "已有安装任务在运行: $(status)" >&2
+		exit 3
+	fi
+	rm -rf "$LOCK"
+	mkdir "$LOCK" 2>/dev/null || {
+		echo "无法获取安装锁: $LOCK" >&2
+		exit 3
+	}
+fi
+
+echo "running $id" > "$STATE"
+: > "$LOG"
+
+if command -v setsid >/dev/null 2>&1; then
+	setsid "$SELF" --run "$id" >>"$LOG" 2>&1 </dev/null &
+else
+	nohup "$SELF" --run "$id" >>"$LOG" 2>&1 </dev/null &
+fi
+
+echo "started"
+exit 0

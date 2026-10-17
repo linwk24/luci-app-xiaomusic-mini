@@ -1,0 +1,27 @@
+{
+	"luci-app-xiaomusic-mini": {
+		"description": "Grant access to xiaomusic-mini service, config and helper scripts",
+		"read": {
+			"file": {
+				"/opt/xiaomusic-mini/config.json": [ "read" ],
+				"/usr/libexec/xiaomusic-mini-check*": [ "exec" ],
+				"/usr/libexec/xiaomusic-mini-log*": [ "exec" ]
+			},
+			"cgi-io": [ "exec" ],
+			"ubus": {
+				"file": [ "read", "exec" ],
+				"luci": [ "getInitList" ]
+			}
+		},
+		"write": {
+			"file": {
+				"/opt/xiaomusic-mini/config.json": [ "write" ],
+				"/usr/libexec/xiaomusic-mini-install*": [ "exec" ]
+			},
+			"ubus": {
+				"file": [ "write" ],
+				"luci": [ "setInitAction" ]
+			}
+		}
+	}
+}
