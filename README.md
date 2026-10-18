@@ -136,6 +136,12 @@ python3-pip、python3-aiohttp（若 feed 有）或 pip：mutagen、miservice-for
 换取服务 token 失败时，页面会显示小米返回的 `code/desc`，详细过程见
 `/var/log/xiaomusic-mini-qrlogin.log`。
 
+> 如果失败信息里出现 `code=0` 且带 `captchaUrl` / `notificationUrl` / `pwd` / `result`，
+> 这是小米的**异地登录/安全验证**（不是扫码失败）：先在浏览器打开
+> <https://account.xiaomi.com/> 用同一账号登录并完成手机验证，再把浏览器里的
+> `passToken` / `userId` / `deviceId` 写入 `token_path`，即可换取服务 token。
+> 验证通过后，扫码流程通常也能恢复正常。
+
 ## 语音口令
 
 | 口令 | 功能 |
