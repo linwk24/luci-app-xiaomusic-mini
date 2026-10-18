@@ -89,7 +89,7 @@ return view.extend({
 			fs.read(CFG_PATH).then(function (s) {
 				try { return JSON.parse(s || '{}'); } catch (e) { return {}; }
 			}).catch(function () { return {}; }),
-			L.resolveDefault(callInitList({ name: SVC }), {}),
+			L.resolveDefault(callInitList(SVC), {}),
 			runChecker()
 		]);
 	},
@@ -198,7 +198,7 @@ return view.extend({
 					elRun.style.color = '#c00';
 					elErr.textContent = '接口不可用（' + base + '）：' + e.message;
 				}),
-				callInitList({ name: SVC }).then(function (info) {
+				callInitList(SVC).then(function (info) {
 					var st = (info || {})[SVC];
 					elEnabled.textContent = st ? (st.enabled ? '已启用' : '未启用') : '—';
 				}).catch(function () { elEnabled.textContent = '—'; })
@@ -245,7 +245,7 @@ return view.extend({
 		}
 
 		function initAction(action) {
-			return callSetInit({ name: SVC, action: action }).then(function (ret) {
+			return callSetInit(SVC, action).then(function (ret) {
 				if (ret && ret.error) { notify(ret.error, 'error'); return; }
 				if (ret && ret.result === false) { notify('服务未执行：' + action, 'error'); return; }
 				notify('已执行：' + action);
