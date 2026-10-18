@@ -1,0 +1,361 @@
+#!/usr/bin/python3
+# -*- coding: utf-8 -*-
+"""xiaomusic-mini 扫码登录（米家 App 扫码，更新 mi.token）
+
+用法:
+  xiaomusic-mini-qrlogin start      后台启动一次扫码登录，立即返回
+  xiaomusic-mini-qrlogin --status   输出状态 JSON（供 LuCI 轮询）
+  xiaomusic-mini-qrlogin --cancel   取消当前扫码
+  xiaomusic-mini-qrlogin --log      输出最近日志
+
+为什么需要它：
+  小米账号开启手机验证/验证码后，密码登录无法自动完成（日志里是
+  KeyError: 'userId' / captchaUrl）。用米家 App 扫码可以拿到 userId/passToken，
+  再换取 micoapi 服务 token 写入 token_path，全程不需要密码。
+
+流程（与 hanxi/xiaomusic 的扫码登录一致）：
+  serviceLogin(sid=mijia) -> longPolling/loginUrl -> 显示 qr 图片
+  -> 长轮询 lp -> userId/passToken -> MiAccount.login("micoapi") -> 写 token 文件
+"""
+
+import asyncio
+import json
+import os
+import random
+import shutil
+import signal
+import subprocess
+import sys
+import time
+import traceback
+import urllib.parse
+
+import aiohttp
+
+CONF = "/opt/xiaomusic-mini/config.json"
+DEFAULT_TOKEN = "/opt/xiaomusic-mini/mi.token"
+STATE = "/var/run/xiaomusic-mini-qrlogin.state"
+LOCK = "/var/run/xiaomusic-mini-qrlogin.lock"
+LOG = "/var/log/xiaomusic-mini-qrlogin.log"
+
+SERVICE_LOGIN = "https://account.xiaomi.com/pass/serviceLogin?_json=true&sid=mijia&_locale=zh_CN"
+LOGIN_URL = "https://account.xiaomi.com/longPolling/loginUrl"
+DEFAULT_WAIT = 300
+
+
+# ---------------------------------------------------------------- 状态
+def load_cfg():
+    try:
+        with open(CONF, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def read_state():
+    try:
+        with open(STATE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"status": "idle"}
+
+
+def write_state(**kw):
+    st = read_state()
+    st.update(kw)
+    st["updated"] = int(time.time())
+    try:
+        os.makedirs(os.path.dirname(STATE), exist_ok=True)
+        tmp = STATE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(st, f, ensure_ascii=False)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, STATE)
+    except Exception:
+        pass
+
+
+def public_state():
+    st = read_state()
+    status = str(st.get("status") or "idle")
+    expires = int(st.get("expires") or 0)
+    if status == "waiting" and expires and time.time() > expires:
+        write_state(status="expired", qr="")
+        st = read_state()
+        status = "expired"
+        expires = 0
+    elif status == "starting" and time.time() - int(st.get("updated") or 0) > 90:
+        # 子进程没起来/卡住时不至于一直显示“正在获取”
+        write_state(status="error", qr="", error="获取二维码超时，请重试")
+        st = read_state()
+        status = "error"
+    show_qr = status in ("waiting", "scanned")
+    return {
+        "status": status,
+        "qr": (st.get("qr") or "") if show_qr else "",
+        "expires_in": max(0, expires - int(time.time())) if show_qr else 0,
+        "error": st.get("error") or "",
+        "message": st.get("message") or "",
+        "updated": st.get("updated") or 0,
+    }
+
+
+# ---------------------------------------------------------------- 工具
+def rand_hex(n):
+    return "".join(random.choices("0123456789ABCDEF", k=n))
+
+
+def user_agent():
+    # 米家 App 风格的 UA，降低风控概率
+    return (
+        "Android-15-11.0.701-Xiaomi-23046RP50C-OS2.0.212.0.VMYCNXM-"
+        f"{rand_hex(40)}-CN-{rand_hex(32)}-{rand_hex(32)}-SmartHome-MI_APP_STORE-"
+        f"{rand_hex(40)}|{rand_hex(40)}|{rand_hex(16)}-64"
+    )
+
+
+def parse_json(text):
+    text = (text or "").strip()
+    if text.startswith("&&&START&&&"):
+        text = text[len("&&&START&&&"):]
+    if not text:
+        return {}
+    return json.loads(text)
+
+
+async def fetch_json(session, url, cookies=None):
+    async with session.get(url, cookies=cookies, timeout=20) as r:
+        text = await r.text()
+        if r.status != 200:
+            raise RuntimeError(f"HTTP {r.status}: {text[:80]}")
+        return parse_json(text)
+
+
+async def poll_lp(session, lp, ua):
+    try:
+        async with session.get(
+            lp, headers={"User-Agent": ua}, timeout=aiohttp.ClientTimeout(total=125)
+        ) as r:
+            return parse_json(await r.text())
+    except asyncio.TimeoutError:
+        return {}
+
+
+async def save_token(session, cfg, data, device_id):
+    """用扫码得到的 userId/passToken 换取 micoapi 服务 token 并写入 token 文件。"""
+    from miservice import MiAccount, MiTokenStore
+
+    token_path = str(cfg.get("token_path") or DEFAULT_TOKEN)
+    os.makedirs(os.path.dirname(token_path) or ".", exist_ok=True)
+    account = MiAccount(
+        session,
+        str(cfg.get("account") or ""),
+        "",
+        MiTokenStore(token_path),
+    )
+    account.token = {
+        "deviceId": device_id,
+        "userId": str(data.get("userId") or ""),
+        "passToken": str(data.get("passToken") or ""),
+    }
+    ok = await account.login("micoapi")
+    if not ok:
+        raise RuntimeError("扫码成功但换取服务 token 失败（passToken 可能已失效）")
+    try:
+        os.chmod(token_path, 0o600)
+    except OSError:
+        pass
+    return token_path
+
+
+# ---------------------------------------------------------------- 主流程
+async def run_login():
+    cfg = load_cfg()
+    ua = user_agent()
+    device_id = rand_hex(16).lower()
+    pass_o = rand_hex(16).lower()
+
+    write_state(status="starting", qr="", error="", message="", expires=0, pid=os.getpid())
+
+    try:
+        async with aiohttp.ClientSession(headers={"User-Agent": ua}) as session:
+            cookies = {
+                "deviceId": device_id,
+                "pass_o": pass_o,
+                "passToken": "",
+                "userId": "",
+                "cUserId": "",
+                "uLocale": "zh_CN",
+            }
+
+            # 1) 取 serviceLogin 的 location 参数
+            data = await fetch_json(session, SERVICE_LOGIN, cookies=cookies)
+            loc = str(data.get("location") or "")
+            params = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(loc).query))
+            params.update({
+                "theme": "",
+                "bizDeviceType": "",
+                "_hasLogo": "false",
+                "_qrsize": "240",
+                "_dc": str(int(time.time() * 1000)),
+            })
+
+            # 2) 取二维码与长轮询地址
+            if params:
+                login = await fetch_json(
+                    session, LOGIN_URL + "?" + urllib.parse.urlencode(params), cookies=cookies
+                )
+            else:
+                login = await fetch_json(
+                    session, LOGIN_URL + "?sid=mijia&_json=true", cookies=cookies
+                )
+
+            qr = str(login.get("qr") or "")
+            lp = str(login.get("lp") or "")
+            ttl = int(login.get("timeout") or DEFAULT_WAIT)
+            if not qr or not lp:
+                raise RuntimeError("小米未返回二维码/轮询地址")
+
+            expires = int(time.time()) + ttl
+            write_state(status="waiting", qr=qr, expires=expires, error="", message="", timeout=ttl)
+
+            # 3) 长轮询等待扫码
+            while time.time() < expires:
+                data = await poll_lp(session, lp, ua)
+                if data.get("userId") and data.get("passToken"):
+                    write_state(status="scanned", qr=qr)
+                    token_path = await save_token(session, cfg, data, device_id)
+                    write_state(
+                        status="ok", qr="", expires=0,
+                        message=f"登录成功，token 已写入 {token_path}",
+                    )
+                    return
+                if data.get("code") not in (None, 0):
+                    desc = data.get("desc") or data.get("description") or ""
+                    write_state(
+                        status="error", qr="", error=f"小米返回: {desc} (code {data.get('code')})"
+                    )
+                    return
+                await asyncio.sleep(1)
+
+            write_state(status="expired", qr="", error="二维码已过期，请重新获取")
+    except asyncio.CancelledError:
+        write_state(status="idle", qr="", message="已取消")
+        raise
+    except Exception as e:
+        write_state(status="error", qr="", error=str(e))
+        raise
+
+
+# ---------------------------------------------------------------- 进程管理
+def is_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def running_pid():
+    try:
+        with open(os.path.join(LOCK, "pid"), encoding="utf-8") as f:
+            pid = int(f.read().strip())
+        return pid if is_alive(pid) else 0
+    except Exception:
+        return 0
+
+
+def cmd_start():
+    st = public_state()
+    pid = running_pid()
+    if pid and st.get("status") in ("starting", "waiting", "scanned"):
+        print(json.dumps({"started": False, "status": st["status"]}, ensure_ascii=False))
+        return 0
+    if pid:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+
+    try:
+        os.makedirs(LOCK, exist_ok=True)
+    except OSError:
+        pass
+
+    # 先重置状态，避免 UI 在子进程启动前读到上一次的 ok/error
+    write_state(status="starting", qr="", error="", message="", expires=0, pid=0)
+
+    logfile = open(LOG, "ab", buffering=0)
+    try:
+        subprocess.Popen(
+            ["/usr/bin/python3", os.path.abspath(__file__), "--run"],
+            stdin=subprocess.DEVNULL,
+            stdout=logfile,
+            stderr=logfile,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except Exception:
+        logfile.close()
+        shutil.rmtree(LOCK, ignore_errors=True)
+        raise
+    logfile.close()
+
+    print("started")
+    return 0
+
+
+def cmd_cancel():
+    pid = running_pid()
+    if pid:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    write_state(status="idle", qr="", expires=0, message="已取消")
+    shutil.rmtree(LOCK, ignore_errors=True)
+    print(json.dumps(public_state(), ensure_ascii=False))
+    return 0
+
+
+def cmd_log():
+    try:
+        with open(LOG, "rb") as f:
+            lines = f.read().splitlines()[-100:]
+        sys.stdout.write("\n".join(x.decode("utf-8", "replace") for x in lines) + "\n")
+    except FileNotFoundError:
+        print("(暂无日志)")
+    return 0
+
+
+def main():
+    arg = sys.argv[1] if len(sys.argv) > 1 else ""
+    if arg in ("--status", "-s"):
+        print(json.dumps(public_state(), ensure_ascii=False))
+        return 0
+    if arg in ("--cancel", "-c"):
+        return cmd_cancel()
+    if arg in ("--log", "-l"):
+        return cmd_log()
+    if arg == "start":
+        return cmd_start()
+    if arg == "--run":
+        os.makedirs(LOCK, exist_ok=True)
+        try:
+            with open(os.path.join(LOCK, "pid"), "w", encoding="utf-8") as f:
+                f.write(str(os.getpid()))
+            asyncio.run(run_login())
+            return 0
+        except Exception:
+            with open(LOG, "a", encoding="utf-8") as f:
+                f.write(traceback.format_exc() + "\n")
+            return 1
+        finally:
+            shutil.rmtree(LOCK, ignore_errors=True)
+
+    print(__doc__)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

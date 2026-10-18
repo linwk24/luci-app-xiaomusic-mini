@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-xiaomusic-mini
-PKG_VERSION:=1.0.1
+PKG_VERSION:=1.0.2
 PKG_RELEASE:=1
 PKG_LICENSE:=MIT
 PKG_MAINTAINER:=
@@ -28,6 +28,7 @@ if [ -z "$${IPKG_INSTROOT}" ]; then
 	chmod 755 /usr/libexec/xiaomusic-mini-check 2>/dev/null
 	chmod 755 /usr/libexec/xiaomusic-mini-install 2>/dev/null
 	chmod 755 /usr/libexec/xiaomusic-mini-log 2>/dev/null
+	chmod 755 /usr/libexec/xiaomusic-mini-qrlogin 2>/dev/null
 	chmod 755 /usr/lib/xiaomusic-mini/main.py 2>/dev/null
 	[ -x /etc/uci-defaults/90-luci-app-xiaomusic-mini ] && \
 		/etc/uci-defaults/90-luci-app-xiaomusic-mini

@@ -21,6 +21,7 @@ chmod 755 /etc/init.d/xiaomusic-mini 2>/dev/null
 chmod 755 /usr/libexec/xiaomusic-mini-check 2>/dev/null
 chmod 755 /usr/libexec/xiaomusic-mini-install 2>/dev/null
 chmod 755 /usr/libexec/xiaomusic-mini-log 2>/dev/null
+	chmod 755 /usr/libexec/xiaomusic-mini-qrlogin 2>/dev/null
 chmod 755 /usr/lib/xiaomusic-mini/main.py 2>/dev/null
 
 /etc/init.d/xiaomusic-mini enable 2>/dev/null

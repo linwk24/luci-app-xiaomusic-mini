@@ -35,9 +35,10 @@ opkg install luci-app-xiaomusic-mini_1.0.1-r1_all.ipk
 | `root/usr/libexec/xiaomusic-mini-check` | `/usr/libexec/xiaomusic-mini-check` | 环境检测，输出 JSON |
 | `root/usr/libexec/xiaomusic-mini-install` | `/usr/libexec/xiaomusic-mini-install` | 依赖安装器（白名单 + 后台执行 + 状态轮询） |
 | `root/usr/libexec/xiaomusic-mini-log` | `/usr/libexec/xiaomusic-mini-log` | 输出运行日志尾部 |
+| `root/usr/libexec/xiaomusic-mini-qrlogin` | `/usr/libexec/xiaomusic-mini-qrlogin` | 米家 App 扫码登录，更新 `mi.token`（二次验证时用） |
 | `root/usr/share/xiaomusic-mini/config.json` | `/usr/share/xiaomusic-mini/config.json` | 默认配置模板（**不含任何账号信息**） |
 | `root/usr/share/luci/menu.d/...` | `/usr/share/luci/menu.d/` | 菜单项 |
-| `root/usr/share/rpcd/acl.d/...` | `/usr/share/rpcd/acl.d/` | ACL（仅放行配置读写与三个 helper） |
+| `root/usr/share/rpcd/acl.d/...` | `/usr/share/rpcd/acl.d/` | ACL（仅放行配置读写与四个 helper） |
 
 运行期数据（不随包覆盖，升级保留）：
 
@@ -65,7 +66,7 @@ cd ~/openwrt
 ./scripts/feeds update -a && ./scripts/feeds install -a
 make menuconfig     # LuCI → Applications → luci-app-xiaomusic-mini
 make package/luci-app-xiaomusic-mini/compile V=s
-# 产物: bin/packages/<arch>/luci/luci-app-xiaomusic-mini_1.0.1-1_all.ipk
+# 产物: bin/packages/<arch>/luci/luci-app-xiaomusic-mini_1.0.2-1_all.ipk
 ```
 
 - 页面文件必须放在 `htdocs/luci-static/...`（`luci.mk` 只安装 `htdocs/`、`root/`、`luasrc/`、`ucode/`、`src/`；放在旧的 `luci-static/` 目录**不会**被打包）。
@@ -103,9 +104,29 @@ python3-pip、python3-aiohttp（若 feed 有）或 pip：mutagen、miservice-for
 
 > **小米账号二次验证**：部分账号在网页/新设备登录时会要求手机确认或验证码，
 > 此时代码登录会失败（日志里的 `captchaUrl` / `KeyError: 'userId'`）。
-> 请从一台能正常登录小爱/米家的机器上取得 `mi.token`，放到
-> `/opt/xiaomusic-mini/mi.token`（`600`）后重启服务；token 有效时不需要密码。
-> `token_path` 可在配置里改。
+> 在页面 **账号登录 → 扫码登录 / 更新 token**，用米家 App 扫码并在手机上确认，
+> token 会写入 `/opt/xiaomusic-mini/mi.token`（`600`）并自动重启服务 —— 全程不需要密码。
+
+## 扫码登录（二次验证 / token 过期）
+
+页面「账号登录 → 扫码登录 / 更新 token」会调用 `xiaomusic-mini-qrlogin`：
+
+1. 后端向小米请求 `longPolling/loginUrl`，拿到二维码（官方 PNG）；
+2. 用米家 App（我的 → 右上角扫码）或小米手机扫码，手机上确认登录；
+3. 拿到 `userId` / `passToken` 后自动换取 `micoapi` 服务 token，写入 `token_path`；
+4. 页面检测到成功后自动重启服务。
+
+也可以 SSH 操作：
+
+```sh
+/usr/libexec/xiaomusic-mini-qrlogin start      # 生成二维码（后台）
+/usr/libexec/xiaomusic-mini-qrlogin --status   # {"status":"waiting","qr":"https://..."}
+/usr/libexec/xiaomusic-mini-qrlogin --cancel   # 取消
+/usr/libexec/xiaomusic-mini-qrlogin --log      # 日志（/var/log/xiaomusic-mini-qrlogin.log）
+```
+
+二维码 5 分钟内有效；同一时间只允许一个扫码任务。扫码登录走的是米家 App 的官方
+`longPolling` 流程（与 hanxi/xiaomusic 相同），不需要额外的 `qrcode`/`pycryptodome` 依赖。
 
 ## 语音口令
 
@@ -148,8 +169,9 @@ python3-pip、python3-aiohttp（若 feed 有）或 pip：mutagen、miservice-for
 | `main.py` | 新增 `__version__` / `--version`；启动日志打印版本；插件目录改为「显式配置 > 配置目录/plugins > 程序自带 plugins」两级加载；token 只回退 `token_path`/`.bak`（去掉硬编码旧路径）；认证失效时强制重登；`http_host=auto` 改为优先探测 LAN 地址（`ifstatus lan`/`br-lan`），避免双 NAT 时把播放 URL 指向上级路由；启动后第一次轮询只记录基线、不重放历史口令；登录失败时给出二次验证/token 提示 |
 | `init.d/xiaomusic-mini` | 程序路径改到 `/usr/lib`；启动前校验 python3 与账号密码，缺失则跳过（不进入重启循环） |
 | `xiaomusic-mini-check` | 增加后端存在性/版本、pip、标准库组件、配置文件、账号、音乐目录检查；输出 `ok`（全部通过）与 `env_ok`（仅运行环境）两个标志 |
-| `overview.js` | 移除任意命令执行；改为调用白名单安装器；环境检测改为可折叠（有未通过项自动展开，折叠状态记忆在浏览器）；新增后端版本、安装状态轮询、安装日志、运行日志、自定义口令编辑；配置缺失时补齐后端必需项 |
-| ACL | 只放行 `/opt/xiaomusic-mini/config.json` 读写和三个 helper 执行，删除原来的 `pip3 install *` / `opkg install *` 任意命令权限 |
+| `overview.js` | 移除任意命令执行；改为调用白名单安装器；环境检测改为可折叠（有未通过项自动展开，折叠状态记忆在浏览器）；新增账号扫码登录、后端版本、安装状态轮询、安装日志、运行日志、自定义口令编辑；配置缺失时补齐后端必需项 |
+| `xiaomusic-mini-qrlogin`（新增） | 米家 App 扫码登录：`serviceLogin(sid=mijia)` → `longPolling/loginUrl` → 轮询 `lp` → `userId/passToken` → `MiAccount.login("micoapi")` 写 token；后台执行 + 状态文件，供页面轮询 |
+| ACL | 只放行 `/opt/xiaomusic-mini/config.json` 读写和四个 helper 执行（含扫码登录），删除原来的 `pip3 install *` / `opkg install *` 任意命令权限 |
 
 ## 安全说明
 
@@ -166,7 +188,7 @@ python3-pip、python3-aiohttp（若 feed 有）或 pip：mutagen、miservice-for
 |---|---|
 | 页面提示「接口不可用」 | 看「服务 → 查看日志」；确认配置已保存、账号密码正确、服务已启动 |
 | 依赖装不上 | 「环境检测 → 安装日志」查看 pip/opkg 输出；也可 SSH 执行「查看安装命令」里的命令 |
-| 登录失败 / 日志出现 `70016`、`captchaUrl`、`KeyError: 'userId'` | 账号触发了手机验证/验证码：从可正常登录的环境复制 `mi.token` 到 `/opt/xiaomusic-mini/mi.token`（`600`）后重启；或删除失效 token 重新用密码登录 |
+| 登录失败 / 日志出现 `70016`、`captchaUrl`、`KeyError: 'userId'` | 账号触发了手机验证/验证码：页面「账号登录 → 扫码登录 / 更新 token」用米家 App 扫码；或从可正常登录的环境复制 `mi.token` 到 `/opt/xiaomusic-mini/mi.token`（`600`）后重启 |
 | 播放地址是上级路由（如 192.168.6.1） | 双 NAT 环境：`http_host` 改成路由 LAN 地址（如 `192.168.5.1`），或保持 `auto` 并确认新版已用 `ifstatus lan` 探测 |
 | 说话没反应 | `tail -f /opt/xiaomusic-mini/xiaomusic-mini.log`，确认有「收到语音口令」；检查路由器与音箱同网段 |
 | 收到口令但不播放 | 日志看「播放指令返回」；确认音乐目录可读、`http_host` 正确、`http://路由器IP:8091/music/...` 能打开 |
@@ -181,3 +203,4 @@ python3-pip、python3-aiohttp（若 feed 有）或 pip：mutagen、miservice-for
   CORS 预检、未知命令 400、Range 206、目录穿越 404。
 - `xiaomusic-mini-check` 正常/缺依赖/标准库缺失/无 python3（降级 JSON + `--deps`）均验证。
 - `xiaomusic-mini-install` 验证了白名单、后台执行、状态轮询、并发拒绝、残留锁恢复、`stdlib` 安装。
+- `xiaomusic-mini-qrlogin` 验证了 start/status/cancel、二维码 PNG 获取、成功与过期两条状态路径（stub 测试）；真机验证到扫码前的 waiting 状态。

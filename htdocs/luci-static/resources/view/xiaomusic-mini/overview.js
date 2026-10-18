@@ -10,6 +10,7 @@ var SVC = 'xiaomusic-mini';
 var CHK = '/usr/libexec/xiaomusic-mini-check';
 var INSTALLER = '/usr/libexec/xiaomusic-mini-install';
 var LOG_HELPER = '/usr/libexec/xiaomusic-mini-log';
+var QR_HELPER = '/usr/libexec/xiaomusic-mini-qrlogin';
 var DEFAULT_PORT = 8091;
 
 var callSetInit = rpc.declare({ object: 'luci', method: 'setInitAction', params: [ 'name', 'action' ] });
@@ -135,6 +136,7 @@ return view.extend({
 
 		var gated = [];
 		var installBusy = false;
+		var qrTimer = null;
 
 		function mkBtn(label, fn, primary) {
 			var b = btn(label, fn, primary);
@@ -512,6 +514,90 @@ return view.extend({
 			});
 		}
 
+		function fmtSec(n) {
+			n = Math.max(0, parseInt(n, 10) || 0);
+			var m = Math.floor(n / 60);
+			var s = n % 60;
+			return m + ':' + (s < 10 ? '0' : '') + s;
+		}
+
+		function stopQrPoll() {
+			if (qrTimer) {
+				clearInterval(qrTimer);
+				qrTimer = null;
+			}
+		}
+
+		function openQrLogin() {
+			fs.exec_direct(QR_HELPER, [ 'start' ]).then(function () {
+				var elImg = E('img', {
+					'alt': '二维码',
+					'style': 'width:240px;height:240px;background:#fff;border:1px solid #eee;' +
+						'border-radius:8px;display:none'
+				});
+				var elMsg = E('p', { 'class': 'cbi-value-description' }, '正在获取二维码…');
+				var elFoot = E('div', { 'class': 'right' }, [
+					E('button', {
+						'class': 'btn cbi-button',
+						'click': function () {
+							stopQrPoll();
+							fs.exec_direct(QR_HELPER, [ '--cancel' ]).catch(function () {});
+							ui.hideModal();
+						}
+					}, '取消')
+				]);
+
+				ui.showModal('扫码更新登录 token', [
+					E('div', { 'style': 'text-align:center;padding:8px 0' }, [ elImg, elMsg ]),
+					E('p', { 'class': 'cbi-value-description' },
+						'用米家 App（我的 → 右上角扫码）或小米手机相机扫码，并在手机上确认登录。'),
+					elFoot
+				]);
+
+				var tick = function () {
+					fs.exec_direct(QR_HELPER, [ '--status' ]).then(function (raw) {
+						var st = {};
+						try { st = JSON.parse(raw || '{}'); } catch (e) { st = {}; }
+
+						if (st.status === 'starting') {
+							elMsg.textContent = '正在获取二维码…';
+						} else if (st.status === 'waiting') {
+							if (st.qr) {
+								if (elImg.getAttribute('src') !== st.qr)
+									elImg.setAttribute('src', st.qr);
+								elImg.style.display = '';
+							}
+							elMsg.textContent = '等待扫码…二维码 ' + fmtSec(st.expires_in) + ' 后过期';
+						} else if (st.status === 'scanned') {
+							elMsg.textContent = '已扫码，正在换取服务 token…';
+						} else if (st.status === 'ok') {
+							stopQrPoll();
+							ui.hideModal();
+							notify('扫码登录成功，正在重启服务…');
+							initAction('restart').then(function () { return checkAgain(); });
+						} else if (st.status === 'expired') {
+							stopQrPoll();
+							elImg.style.display = 'none';
+							elMsg.textContent = '二维码已过期，请关闭后重新点击「扫码登录」。';
+						} else if (st.status === 'error') {
+							stopQrPoll();
+							elImg.style.display = 'none';
+							elMsg.textContent = '登录失败：' + (st.error || '未知错误');
+						}
+					}).catch(function (e) {
+						stopQrPoll();
+						elMsg.textContent = '读取扫码状态失败：' + (e.message || e);
+					});
+				};
+
+				stopQrPoll();
+				tick();
+				qrTimer = setInterval(tick, 2000);
+			}).catch(function (e) {
+				notify('启动扫码登录失败：' + (e.message || e), 'error');
+			});
+		}
+
 		var elEnvBanner = E('div', {
 			'style': 'display:none;background:#fbeaea;color:#c00;padding:10px 12px;border-radius:6px;margin:6px 0 10px'
 		}, '');
@@ -584,6 +670,15 @@ return view.extend({
 					' ', mkBtn('启用自启', function () { initAction('enable'); }),
 					' ', mkBtn('禁用自启', function () { initAction('disable'); }),
 					' ', btn('查看日志', showLog)
+				]))
+			]),
+
+			E('div', { 'class': 'cbi-section' }, [
+				E('h3', {}, '账号登录'),
+				E('p', { 'class': 'cbi-value-description' },
+					'小米账号开启手机验证/验证码时，密码登录会被拦截。用米家 App 扫码可直接更新登录 token（无需密码），成功后自动重启服务。'),
+				row('操作', E('div', {}, [
+					btn('扫码登录 / 更新 token', openQrLogin, true)
 				]))
 			]),
 

@@ -16,7 +16,8 @@
 		"write": {
 			"file": {
 				"/opt/xiaomusic-mini/config.json": [ "write" ],
-				"/usr/libexec/xiaomusic-mini-install*": [ "exec" ]
+				"/usr/libexec/xiaomusic-mini-install*": [ "exec" ],
+				"/usr/libexec/xiaomusic-mini-qrlogin*": [ "exec" ]
 			},
 			"ubus": {
 				"file": [ "write" ],
