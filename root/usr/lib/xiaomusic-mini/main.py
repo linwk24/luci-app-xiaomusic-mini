@@ -26,7 +26,7 @@ xiaomusic-mini —— 小爱音箱「语音点播本地音乐」精简插件
   xiaomusic-mini --version                                     # 打印版本
 """
 
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 
 import argparse
 import ast
@@ -52,6 +52,11 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import aiohttp
 import mutagen
 from miservice import MiAccount, MiIOService, MiNAService, MiTokenStore, miio_command
+
+try:
+    from miservice_patch import install as install_miservice_patch
+except Exception:  # 补丁缺失时退回 miservice 原行为
+    install_miservice_patch = None
 
 # ---------------------------------------------------------------- 常量
 LATEST_ASK_API = (
@@ -799,6 +804,8 @@ class XiaomiMini:
 
     # ---- 服务初始化 / 重登录 ----
     async def init_services(self):
+        if install_miservice_patch:
+            install_miservice_patch()
         if self.session is not None:
             try:
                 await self.session.close()

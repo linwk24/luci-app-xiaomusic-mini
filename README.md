@@ -33,6 +33,7 @@ opkg install luci-app-xiaomusic-mini_1.0.1-r1_all.ipk
 |---|---|---|
 | `htdocs/luci-static/resources/view/xiaomusic-mini/overview.js` | `/www/luci-static/resources/view/xiaomusic-mini/overview.js` | LuCI 页面（`luci.mk` 自动安装 `htdocs/`） |
 | `root/usr/lib/xiaomusic-mini/main.py` | `/usr/lib/xiaomusic-mini/main.py` | 后端主程序（纯 Python 单文件） |
+| `root/usr/lib/xiaomusic-mini/miservice_patch.py` | `/usr/lib/xiaomusic-mini/miservice_patch.py` | miservice 兼容补丁（passToken 续期不丢 token） |
 | `root/usr/lib/xiaomusic-mini/plugins/*.py` | `/usr/lib/xiaomusic-mini/plugins/` | 自带插件（`code1`、`httpget`），供 `exec#` 自定义口令调用 |
 | `root/etc/init.d/xiaomusic-mini` | `/etc/init.d/xiaomusic-mini` | procd 服务脚本 |
 | `root/etc/uci-defaults/90-luci-app-xiaomusic-mini` | `/etc/uci-defaults/` | 首次安装：建数据目录、生成默认配置、修权限、开机自启 |
@@ -70,7 +71,7 @@ cd ~/openwrt
 ./scripts/feeds update -a && ./scripts/feeds install -a
 make menuconfig     # LuCI → Applications → luci-app-xiaomusic-mini
 make package/luci-app-xiaomusic-mini/compile V=s
-# 产物: bin/packages/<arch>/luci/luci-app-xiaomusic-mini_1.0.2-1_all.ipk
+# 产物: bin/packages/<arch>/luci/luci-app-xiaomusic-mini_1.0.3-1_all.ipk
 ```
 
 - 页面文件必须放在 `htdocs/luci-static/...`（`luci.mk` 只安装 `htdocs/`、`root/`、`luasrc/`、`ucode/`、`src/`；放在旧的 `luci-static/` 目录**不会**被打包）。
@@ -132,6 +133,9 @@ python3-pip、python3-aiohttp（若 feed 有）或 pip：mutagen、miservice-for
 二维码 5 分钟内有效；同一时间只允许一个扫码任务。扫码登录走的是米家 App 的官方
 `longPolling` 流程（与 hanxi/xiaomusic 相同），不需要额外的 `qrcode`/`pycryptodome` 依赖。
 
+换取服务 token 失败时，页面会显示小米返回的 `code/desc`，详细过程见
+`/var/log/xiaomusic-mini-qrlogin.log`。
+
 ## 语音口令
 
 | 口令 | 功能 |
@@ -175,6 +179,7 @@ python3-pip、python3-aiohttp（若 feed 有）或 pip：mutagen、miservice-for
 | `xiaomusic-mini-check` | 增加后端存在性/版本、pip、标准库组件、配置文件、账号、音乐目录检查；输出 `ok`（全部通过）与 `env_ok`（仅运行环境）两个标志 |
 | `overview.js` | 移除任意命令执行；改为调用白名单安装器；环境检测改为可折叠（有未通过项自动展开，折叠状态记忆在浏览器）；新增账号扫码登录、后端版本、安装状态轮询、安装日志、运行日志、自定义口令编辑；配置缺失时补齐后端必需项 |
 | `xiaomusic-mini-qrlogin`（新增） | 米家 App 扫码登录：`serviceLogin(sid=mijia)` → `longPolling/loginUrl` → 轮询 `lp` → `userId/passToken` → `MiAccount.login("micoapi")` 写 token；后台执行 + 状态文件，供页面轮询 |
+| `miservice_patch.py`（新增） | 修复 miservice 2.9.3 两个问题：passToken 续期时响应不带 passToken 导致 `KeyError`；登录失败时删除 token 文件。补丁保留原 passToken，失败也不再删 token |
 | ACL | 只放行 `/opt/xiaomusic-mini/config.json` 读写和四个 helper 执行（含扫码登录），删除原来的 `pip3 install *` / `opkg install *` 任意命令权限 |
 
 ## 安全说明
@@ -208,3 +213,4 @@ python3-pip、python3-aiohttp（若 feed 有）或 pip：mutagen、miservice-for
 - `xiaomusic-mini-check` 正常/缺依赖/标准库缺失/无 python3（降级 JSON + `--deps`）均验证。
 - `xiaomusic-mini-install` 验证了白名单、后台执行、状态轮询、并发拒绝、残留锁恢复、`stdlib` 安装。
 - `xiaomusic-mini-qrlogin` 验证了 start/status/cancel、二维码 PNG 获取、成功与过期两条状态路径（stub 测试）；真机验证到扫码前的 waiting 状态。
+- `miservice_patch` 验证了“响应无 passToken 仍能续期成功”和“登录失败保留 token 文件”两条路径。

@@ -141,12 +141,38 @@ async def poll_lp(session, lp, ua):
         return {}
 
 
-async def save_token(session, cfg, data, device_id):
+def log(msg):
+    try:
+        with open(LOG, "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
+    except Exception:
+        pass
+
+
+async def save_token(session, cfg, data, device_id, ua=""):
     """用扫码得到的 userId/passToken 换取 micoapi 服务 token 并写入 token 文件。"""
+    sys.path.insert(0, "/usr/lib/xiaomusic-mini")
+    try:
+        from miservice_patch import install as install_patch
+        install_patch()
+    except Exception as e:
+        log(f"miservice 补丁未加载: {e}")
+
     from miservice import MiAccount, MiTokenStore
 
     token_path = str(cfg.get("token_path") or DEFAULT_TOKEN)
     os.makedirs(os.path.dirname(token_path) or ".", exist_ok=True)
+
+    # 与官方流程一致：先访问回调地址（部分账号需要它完成登录）
+    location = str(data.get("location") or "")
+    if location:
+        try:
+            async with session.get(location, headers={"User-Agent": ua}) as r:
+                await r.read()
+                log(f"扫码回调 HTTP {r.status}")
+        except Exception as e:
+            log(f"扫码回调失败（忽略）: {e}")
+
     account = MiAccount(
         session,
         str(cfg.get("account") or ""),
@@ -158,14 +184,39 @@ async def save_token(session, cfg, data, device_id):
         "userId": str(data.get("userId") or ""),
         "passToken": str(data.get("passToken") or ""),
     }
+
+    log("开始用 passToken 换取 micoapi 服务 token")
     ok = await account.login("micoapi")
     if not ok:
-        raise RuntimeError("扫码成功但换取服务 token 失败（passToken 可能已失效）")
+        # 诊断：直接调 serviceLogin 看小米返回的 code/desc（不打印敏感值）
+        detail = ""
+        try:
+            probe = await fetch_json(
+                session,
+                "https://account.xiaomi.com/pass/serviceLogin?sid=micoapi&_json=true",
+                cookies={
+                    "deviceId": device_id,
+                    "userId": str(data.get("userId") or ""),
+                    "passToken": str(data.get("passToken") or ""),
+                },
+            )
+            detail = (
+                f" code={probe.get('code')}"
+                f" desc={probe.get('desc') or probe.get('description') or ''}"
+                f" keys={sorted(probe)[:12]}"
+            )
+        except Exception as e:
+            detail = f" {e}"
+        log(f"换取服务 token 失败:{detail}")
+        raise RuntimeError(f"扫码成功但换取服务 token 失败（{detail.strip() or '未知原因'}）")
+
     try:
         os.chmod(token_path, 0o600)
     except OSError:
         pass
+    log(f"token 已写入 {token_path}")
     return token_path
+
 
 
 # ---------------------------------------------------------------- 主流程
@@ -218,13 +269,18 @@ async def run_login():
 
             expires = int(time.time()) + ttl
             write_state(status="waiting", qr=qr, expires=expires, error="", message="", timeout=ttl)
+            log(f"二维码已生成，{ttl}s 内有效")
 
             # 3) 长轮询等待扫码
             while time.time() < expires:
                 data = await poll_lp(session, lp, ua)
                 if data.get("userId") and data.get("passToken"):
+                    log(
+                        "扫码成功: keys=" + ",".join(sorted(data)[:12])
+                        + f" cUserId={'yes' if data.get('cUserId') else 'no'}"
+                    )
                     write_state(status="scanned", qr=qr)
-                    token_path = await save_token(session, cfg, data, device_id)
+                    token_path = await save_token(session, cfg, data, device_id, ua)
                     write_state(
                         status="ok", qr="", expires=0,
                         message=f"登录成功，token 已写入 {token_path}",
@@ -232,6 +288,7 @@ async def run_login():
                     return
                 if data.get("code") not in (None, 0):
                     desc = data.get("desc") or data.get("description") or ""
+                    log(f"长轮询返回错误: code={data.get('code')} desc={desc}")
                     write_state(
                         status="error", qr="", error=f"小米返回: {desc} (code {data.get('code')})"
                     )
