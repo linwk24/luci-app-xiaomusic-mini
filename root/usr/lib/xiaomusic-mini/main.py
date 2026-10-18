@@ -26,7 +26,7 @@ xiaomusic-mini —— 小爱音箱「语音点播本地音乐」精简插件
   xiaomusic-mini --version                                     # 打印版本
 """
 
-__version__ = "1.0.3"
+__version__ = "1.0.4"
 
 import argparse
 import ast

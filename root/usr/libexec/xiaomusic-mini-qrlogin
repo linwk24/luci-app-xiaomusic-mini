@@ -7,6 +7,8 @@
   xiaomusic-mini-qrlogin --status   输出状态 JSON（供 LuCI 轮询）
   xiaomusic-mini-qrlogin --cancel   取消当前扫码
   xiaomusic-mini-qrlogin --log      输出最近日志
+  xiaomusic-mini-qrlogin import     从 /tmp/xiaomusic-mini-import.json 导入 passToken
+                                     （格式：{"passToken": "V1...==", "userId": "..."}）
 
 为什么需要它：
   小米账号开启手机验证/验证码后，密码登录无法自动完成（日志里是
@@ -19,9 +21,12 @@
 """
 
 import asyncio
+import base64
+import hashlib
 import json
 import os
 import random
+import re
 import shutil
 import signal
 import subprocess
@@ -29,6 +34,7 @@ import sys
 import time
 import traceback
 import urllib.parse
+import uuid
 
 import aiohttp
 
@@ -37,6 +43,7 @@ DEFAULT_TOKEN = "/opt/xiaomusic-mini/mi.token"
 STATE = "/var/run/xiaomusic-mini-qrlogin.state"
 LOCK = "/var/run/xiaomusic-mini-qrlogin.lock"
 LOG = "/var/log/xiaomusic-mini-qrlogin.log"
+IMPORT_FILE = "/tmp/xiaomusic-mini-import.json"
 
 SERVICE_LOGIN = "https://account.xiaomi.com/pass/serviceLogin?_json=true&sid=mijia&_locale=zh_CN"
 LOGIN_URL = "https://account.xiaomi.com/longPolling/loginUrl"
@@ -219,6 +226,153 @@ async def save_token(session, cfg, data, device_id, ua=""):
 
 
 
+# ---------------------------------------------------------------- 导入 passToken
+def extract_pass_token(raw):
+    """从粘贴内容中提取 V1...== 形式的 passToken。"""
+    raw = str(raw or "").strip()
+    m = re.search(r"V1[^\s\"'<>]*?==", raw)
+    return m.group(0) if m else raw
+
+
+async def service_login(session, sid, device_id, user_id, pass_token):
+    """用 passToken 直接换取某个 sid 的服务 token（不触发密码登录）。
+
+    返回 (info, pair)；pair 为 [ssecurity, serviceToken] 或 None。
+    """
+    cookies = {"deviceId": device_id, "userId": user_id, "passToken": pass_token}
+    info = {"sid": sid}
+    try:
+        async with session.get(
+            f"https://account.xiaomi.com/pass/serviceLogin?sid={sid}&_json=true",
+            cookies=cookies, timeout=20,
+        ) as r:
+            info["http"] = r.status
+            data = parse_json(await r.text())
+    except Exception as e:
+        info["error"] = f"请求小米失败: {e}"
+        return info, None
+
+    info["code"] = data.get("code")
+    info["desc"] = data.get("desc") or data.get("description") or ""
+    if data.get("code") != 0:
+        info["error"] = f"小米返回 code={data.get('code')} {info['desc']}".strip()
+        return info, None
+
+    missing = [k for k in ("location", "nonce", "ssecurity") if not data.get(k)]
+    if missing:
+        hints = []
+        if data.get("captchaUrl"):
+            hints.append("captchaUrl")
+        if data.get("notificationUrl"):
+            hints.append("notificationUrl")
+        info["error"] = "小米要求安全验证（缺少 " + ",".join(missing) +             ("；" + ",".join(hints) if hints else "") + "）"
+        return info, None
+
+    client_sign = base64.b64encode(
+        hashlib.sha1(f"nonce={data['nonce']}&{data['ssecurity']}".encode()).digest()
+    ).decode()
+    sts_url = data["location"] + "&clientSign=" + urllib.parse.quote(client_sign)
+    try:
+        async with session.get(sts_url, timeout=20) as r:
+            info["sts_http"] = r.status
+            m = r.cookies.get("serviceToken")
+            service_token = m.value if m else None
+    except Exception as e:
+        info["error"] = f"获取 serviceToken 失败: {e}"
+        return info, None
+
+    if not service_token:
+        info["error"] = f"获取 serviceToken 失败（HTTP {info.get('sts_http')}）"
+        return info, None
+
+    info["ok"] = True
+    return info, [data["ssecurity"], service_token]
+
+
+async def import_pass_token(data):
+    cfg = load_cfg()
+    token_path = str(cfg.get("token_path") or DEFAULT_TOKEN)
+    pass_token = extract_pass_token(data.get("passToken"))
+    user_id = str(data.get("userId") or cfg.get("account") or "").strip()
+    device_id = str(data.get("deviceId") or "").strip() or ("android_" + str(uuid.uuid4()))
+
+    if len(pass_token) < 50 or not pass_token.startswith("V1") or not pass_token.endswith("=="):
+        return {"ok": False, "error": "passToken 格式不正确（应为 V1 开头、== 结尾）"}
+    if not user_id:
+        return {"ok": False, "error": "缺少 userId（小米 ID）"}
+
+    os.makedirs(os.path.dirname(token_path) or ".", exist_ok=True)
+    pending = token_path + ".pending"
+    try:
+        with open(pending, "w", encoding="utf-8") as f:
+            json.dump({"deviceId": device_id, "userId": user_id, "passToken": pass_token}, f)
+        os.chmod(pending, 0o600)
+    except OSError:
+        pending = ""
+
+    token = {"deviceId": device_id, "userId": user_id, "passToken": pass_token}
+    details = {}
+    try:
+        async with aiohttp.ClientSession() as session:
+            for sid in ("micoapi", "xiaomiio"):
+                info, pair = await service_login(session, sid, device_id, user_id, pass_token)
+                details[sid] = info
+                if pair:
+                    token[sid] = pair
+    except Exception as e:
+        return {"ok": False, "error": f"请求小米失败: {e}", "details": details, "pending": pending}
+
+    if "micoapi" not in token:
+        err = details.get("micoapi", {}).get("error") or "micoapi 换取 token 失败"
+        return {"ok": False, "error": err, "details": details, "pending": pending}
+
+    try:
+        tmp = token_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(token, f, indent=2)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, token_path)
+    except OSError as e:
+        return {"ok": False, "error": f"写入 token 失败: {e}", "details": details, "pending": pending}
+
+    if pending:
+        try:
+            os.remove(pending)
+        except OSError:
+            pass
+
+    missing = [sid for sid in ("micoapi", "xiaomiio") if sid not in token]
+    log(f"导入 passToken 成功: userId={user_id}, deviceId={device_id}")
+    return {
+        "ok": True,
+        "path": token_path,
+        "details": details,
+        "warning": ("未获取到 " + ",".join(missing) + "，相关功能稍后可能自动重试") if missing else "",
+    }
+
+
+def cmd_import():
+    try:
+        with open(IMPORT_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        print(json.dumps({"ok": False, "error": f"读取导入数据失败: {e}"}, ensure_ascii=False))
+        return 0
+    finally:
+        try:
+            os.remove(IMPORT_FILE)
+        except OSError:
+            pass
+
+    try:
+        res = asyncio.run(import_pass_token(data))
+    except Exception as e:
+        log(f"导入 passToken 异常: {e}")
+        res = {"ok": False, "error": str(e)}
+    print(json.dumps(res, ensure_ascii=False))
+    return 0
+
+
 # ---------------------------------------------------------------- 主流程
 async def run_login():
     cfg = load_cfg()
@@ -396,6 +550,8 @@ def main():
         return cmd_log()
     if arg == "start":
         return cmd_start()
+    if arg in ("import", "--import"):
+        return cmd_import()
     if arg == "--run":
         os.makedirs(LOCK, exist_ok=True)
         try:

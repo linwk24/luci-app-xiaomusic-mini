@@ -11,6 +11,7 @@ var CHK = '/usr/libexec/xiaomusic-mini-check';
 var INSTALLER = '/usr/libexec/xiaomusic-mini-install';
 var LOG_HELPER = '/usr/libexec/xiaomusic-mini-log';
 var QR_HELPER = '/usr/libexec/xiaomusic-mini-qrlogin';
+var IMPORT_PATH = '/tmp/xiaomusic-mini-import.json';
 var DEFAULT_PORT = 8091;
 
 var callSetInit = rpc.declare({ object: 'luci', method: 'setInitAction', params: [ 'name', 'action' ] });
@@ -133,6 +134,16 @@ return view.extend({
 		});
 
 		elKw.value = JSON.stringify(cfg.key_word_dict || {}, null, 2);
+
+		var elPassToken = E('input', {
+			'id': 'xiaomusic-pass-token',
+			'type': 'password',
+			'class': 'cbi-input-text',
+			'style': 'width:100%',
+			'placeholder': 'V1...=='
+		});
+		var elUserId = inp(cfg.account || '');
+		elUserId.id = 'xiaomusic-user-id';
 
 		var gated = [];
 		var installBusy = false;
@@ -528,6 +539,41 @@ return view.extend({
 			}
 		}
 
+		function doImportPassToken() {
+			var b = this;
+			var pt = String(elPassToken.value || '').trim();
+			var uid = String(elUserId.value || '').trim();
+
+			if (!/V1[^\s]*==/.test(pt)) {
+				notify('passToken 格式不对（应为 V1 开头、== 结尾）', 'error');
+				return;
+			}
+			if (!uid) {
+				notify('请填写 userId（小米 ID）', 'error');
+				return;
+			}
+
+			b.disabled = true;
+			b.textContent = '导入中…';
+
+			fs.write(IMPORT_PATH, JSON.stringify({ passToken: pt, userId: uid }), 384).then(function () {
+				return fs.exec_direct(QR_HELPER, [ 'import' ]);
+			}).then(function (out) {
+				var res = {};
+				try { res = JSON.parse(out || '{}'); } catch (e) { res = { ok: false, error: String(out || '') }; }
+				if (!res.ok)
+					throw new Error(res.error || '导入失败');
+				elPassToken.value = '';
+				notify('passToken 导入成功，正在重启服务…' + (res.warning ? '（' + res.warning + '）' : ''));
+				return initAction('restart').then(function () { return checkAgain(); });
+			}).catch(function (e) {
+				notify('导入 passToken 失败：' + (e.message || e), 'error');
+			}).then(function () {
+				b.disabled = false;
+				b.textContent = '导入 passToken 并重启';
+			});
+		}
+
 		function openQrLogin() {
 			fs.exec_direct(QR_HELPER, [ 'start' ]).then(function () {
 				var elImg = E('img', {
@@ -676,9 +722,14 @@ return view.extend({
 			E('div', { 'class': 'cbi-section' }, [
 				E('h3', {}, '账号登录'),
 				E('p', { 'class': 'cbi-value-description' },
-					'小米账号开启手机验证/验证码时，密码登录会被拦截。用米家 App 扫码可直接更新登录 token（无需密码），成功后自动重启服务。'),
+					'小米账号开启手机验证/验证码时，密码登录会被拦截。可以扫码登录，或直接导入 passToken 更新凭据；成功后自动重启服务。'),
 				row('操作', E('div', {}, [
 					btn('扫码登录 / 更新 token', openQrLogin, true)
+				])),
+				row('passToken', elPassToken, '从小米账号网页或其他能正常登录的环境复制，V1 开头、== 结尾'),
+				row('userId（小米 ID）', elUserId, '默认取配置里的小米账号；通常是 8 位小米 ID'),
+				row('', E('div', {}, [
+					btn('导入 passToken 并重启', doImportPassToken, true)
 				]))
 			]),
 

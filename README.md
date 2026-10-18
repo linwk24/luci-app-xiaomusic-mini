@@ -40,7 +40,7 @@ opkg install luci-app-xiaomusic-mini_1.0.1-r1_all.ipk
 | `root/usr/libexec/xiaomusic-mini-check` | `/usr/libexec/xiaomusic-mini-check` | 环境检测，输出 JSON |
 | `root/usr/libexec/xiaomusic-mini-install` | `/usr/libexec/xiaomusic-mini-install` | 依赖安装器（白名单 + 后台执行 + 状态轮询） |
 | `root/usr/libexec/xiaomusic-mini-log` | `/usr/libexec/xiaomusic-mini-log` | 输出运行日志尾部 |
-| `root/usr/libexec/xiaomusic-mini-qrlogin` | `/usr/libexec/xiaomusic-mini-qrlogin` | 米家 App 扫码登录，更新 `mi.token`（二次验证时用） |
+| `root/usr/libexec/xiaomusic-mini-qrlogin` | `/usr/libexec/xiaomusic-mini-qrlogin` | 米家 App 扫码登录 / 导入 passToken，更新 `mi.token` |
 | `root/usr/share/xiaomusic-mini/config.json` | `/usr/share/xiaomusic-mini/config.json` | 默认配置模板（**不含任何账号信息**） |
 | `root/usr/share/luci/menu.d/...` | `/usr/share/luci/menu.d/` | 菜单项 |
 | `root/usr/share/rpcd/acl.d/...` | `/usr/share/rpcd/acl.d/` | ACL（仅放行配置读写与四个 helper） |
@@ -71,7 +71,7 @@ cd ~/openwrt
 ./scripts/feeds update -a && ./scripts/feeds install -a
 make menuconfig     # LuCI → Applications → luci-app-xiaomusic-mini
 make package/luci-app-xiaomusic-mini/compile V=s
-# 产物: bin/packages/<arch>/luci/luci-app-xiaomusic-mini_1.0.3-1_all.ipk
+# 产物: bin/packages/<arch>/luci/luci-app-xiaomusic-mini_1.0.4-1_all.ipk
 ```
 
 - 页面文件必须放在 `htdocs/luci-static/...`（`luci.mk` 只安装 `htdocs/`、`root/`、`luasrc/`、`ucode/`、`src/`；放在旧的 `luci-static/` 目录**不会**被打包）。
@@ -141,6 +141,15 @@ python3-pip、python3-aiohttp（若 feed 有）或 pip：mutagen、miservice-for
 > <https://account.xiaomi.com/> 用同一账号登录并完成手机验证，再把浏览器里的
 > `passToken` / `userId` / `deviceId` 写入 `token_path`，即可换取服务 token。
 > 验证通过后，扫码流程通常也能恢复正常。
+
+### 导入 passToken（扫码/验证受限时）
+
+页面「账号登录」也可以直接导入 passToken，不依赖扫码：
+
+1. 在能正常登录的小米账号环境里取出 passToken（`V1` 开头、`==` 结尾）；
+2. 填入 passToken 和 userId（小米 ID，默认取配置账号），点「导入 passToken 并重启」；
+3. 后端用随机 `android_<uuid>` deviceId 直接向小米换取 `micoapi` / `xiaomiio` 服务 token；
+   **成功前不会覆盖现有 token**，失败时凭据保存到 `mi.token.pending` 便于重试。
 
 ## 语音口令
 
@@ -220,3 +229,4 @@ python3-pip、python3-aiohttp（若 feed 有）或 pip：mutagen、miservice-for
 - `xiaomusic-mini-install` 验证了白名单、后台执行、状态轮询、并发拒绝、残留锁恢复、`stdlib` 安装。
 - `xiaomusic-mini-qrlogin` 验证了 start/status/cancel、二维码 PNG 获取、成功与过期两条状态路径（stub 测试）；真机验证到扫码前的 waiting 状态。
 - `miservice_patch` 验证了“响应无 passToken 仍能续期成功”和“登录失败保留 token 文件”两条路径。
+- `xiaomusic-mini-qrlogin import` 验证了 passToken 提取/格式校验、成功写入、失败保留原 token 并生成 `.pending`。
