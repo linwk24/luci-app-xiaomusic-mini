@@ -19,7 +19,7 @@
 `luci-app-xiaomusic-mini_<版本>_all.ipk`，然后：
 
 ```sh
-opkg install luci-app-xiaomusic-mini_1.0.1-r1_all.ipk
+opkg install luci-app-xiaomusic-mini_1.0.4-r1_all.ipk
 # 或在 LuCI → 系统 → 软件包 → 上传安装
 ```
 
