@@ -358,129 +358,250 @@ class ControlContext:
         return fut.result(timeout)
 
 
-PANEL_HTML = """<!DOCTYPE html>
+PANEL_HTML = r"""<!DOCTYPE html>
 <html lang="zh-CN"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b0d14">
 <title>xiaomusic-mini 控制台</title>
 <style>
-:root{--bg:#0f1115;--card:#1a1d24;--fg:#e6e6e6;--mut:#8a8f99;--acc:#4c8bf5;--ok:#39c26a}
-*{box-sizing:border-box}body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--fg)}
-.wrap{max-width:640px;margin:0 auto;padding:16px}
-h1{font-size:18px;margin:8px 0 16px;font-weight:600}
-h1 small{color:var(--mut);font-weight:400;font-size:12px}
-.card{background:var(--card);border-radius:12px;padding:16px;margin-bottom:14px}
-.now{font-size:16px;font-weight:600;word-break:break-all}
-.mut{color:var(--mut);font-size:13px;margin-top:6px}
-.btns{display:flex;gap:10px;margin-top:16px}
-button{flex:1;padding:12px 8px;border:0;border-radius:10px;background:#2a2f3a;color:var(--fg);font-size:15px;cursor:pointer}
-button:active{background:#3a4150}button.pri{background:var(--acc);color:#fff}
-.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px}
-select,input{flex:1;padding:10px;border-radius:8px;border:1px solid #333;background:#12151b;color:var(--fg);font-size:14px;min-width:120px}
-ul{list-style:none;margin:10px 0 0;padding:0;max-height:320px;overflow:auto}
-li{padding:10px 8px;border-radius:8px;cursor:pointer;font-size:14px;word-break:break-all}
-li:hover{background:#242a34}li.cur{color:var(--ok)}
-.tag{font-size:12px;background:#2a2f3a;border-radius:6px;padding:2px 8px;margin-left:6px}
-.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#333;padding:10px 18px;border-radius:20px;font-size:14px;opacity:0;transition:.3s}
-.toast.show{opacity:1}
-.seg{display:flex;gap:8px;margin-bottom:14px}
-.seg button{background:#1a1d24;border:1px solid #2a2f3a}
-.seg button.on{background:var(--acc);border-color:var(--acc);color:#fff}
+:root{
+  --bg:#0b0d14;--bg2:#12151f;--card:rgba(255,255,255,.06);--card-b:rgba(255,255,255,.09);
+  --fg:#eef0f6;--mut:#8b91a3;--acc:#7c8cff;--acc2:#b06cff;--ok:#3ddc97;--line:rgba(255,255,255,.08);
+  --r:18px;
+}
+@media (prefers-color-scheme:light){
+  :root{--bg:#f2f4fa;--bg2:#e8ebf5;--card:rgba(255,255,255,.75);--card-b:rgba(20,24,40,.08);
+    --fg:#171a26;--mut:#6b7186;--line:rgba(20,24,40,.08)}
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",Roboto,sans-serif;
+  color:var(--fg);min-height:100vh;
+  background:radial-gradient(900px 500px at 10% -10%,rgba(124,140,255,.22),transparent 60%),
+             radial-gradient(800px 500px at 100% 0%,rgba(176,108,255,.18),transparent 55%),
+             linear-gradient(180deg,var(--bg),var(--bg2));background-attachment:fixed}
+.wrap{max-width:680px;margin:0 auto;padding:max(18px,env(safe-area-inset-top)) 16px 40px}
+header{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:4px 0 16px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:18px;letter-spacing:.2px}
+.logo{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;
+  background:linear-gradient(135deg,var(--acc),var(--acc2));box-shadow:0 6px 18px rgba(124,140,255,.4)}
+.logo svg{width:18px;height:18px;fill:#fff}
+.dev{font-size:12px;color:var(--mut);display:flex;align-items:center;gap:6px;max-width:55%;text-align:right}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--mut);flex:none}
+.dot.on{background:var(--ok);box-shadow:0 0 0 4px rgba(61,220,151,.18)}
+.dev span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.card{background:var(--card);border:1px solid var(--card-b);border-radius:var(--r);padding:16px;margin-bottom:14px;
+  backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)}
+
+.seg{display:flex;background:var(--card);border:1px solid var(--card-b);border-radius:14px;padding:4px;margin-bottom:14px;position:relative}
+.seg button{flex:1;border:0;background:transparent;color:var(--mut);padding:10px 8px;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;transition:.2s}
+.seg button.on{background:linear-gradient(135deg,var(--acc),var(--acc2));color:#fff;box-shadow:0 4px 14px rgba(124,140,255,.35)}
+
+select,input[type=text],input:not([type]){width:100%;padding:11px 12px;border-radius:12px;border:1px solid var(--line);
+  background:rgba(127,127,127,.08);color:var(--fg);font-size:14px;outline:none;transition:.2s;min-width:0}
+select:focus,input:focus{border-color:var(--acc);box-shadow:0 0 0 3px rgba(124,140,255,.2)}
+select option{background:#1a1d28;color:#eee}
+.devsel{margin-bottom:14px}
+
+/* now playing */
+.player{display:flex;gap:16px;align-items:center}
+.art{width:84px;height:84px;border-radius:18px;flex:none;display:grid;place-items:center;position:relative;overflow:hidden;
+  background:linear-gradient(135deg,var(--acc),var(--acc2));box-shadow:0 10px 26px rgba(124,140,255,.35)}
+.art svg{width:36px;height:36px;fill:rgba(255,255,255,.9)}
+.eq{position:absolute;inset:0;display:none;align-items:flex-end;justify-content:center;gap:5px;padding:0 0 16px;background:rgba(0,0,0,.35)}
+.eq i{width:6px;height:10px;border-radius:3px;background:#fff;animation:eq 1s ease-in-out infinite}
+.eq i:nth-child(2){animation-delay:.2s}.eq i:nth-child(3){animation-delay:.4s}.eq i:nth-child(4){animation-delay:.1s}
+@keyframes eq{0%,100%{height:8px}50%{height:34px}}
+.art.playing .eq{display:flex}.art.playing>svg{display:none}
+.meta{min-width:0;flex:1}
+.now{font-size:18px;font-weight:700;line-height:1.3;word-break:break-all;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.chip{font-size:12px;color:var(--mut);background:rgba(127,127,127,.12);border-radius:999px;padding:3px 10px}
+.chip b{color:var(--fg);font-weight:600}
+
+.ctrl{display:flex;align-items:center;justify-content:center;gap:14px;margin:18px 0 4px}
+.ib{width:48px;height:48px;border-radius:50%;border:1px solid var(--line);background:rgba(127,127,127,.1);color:var(--fg);
+  display:grid;place-items:center;cursor:pointer;transition:.15s;padding:0}
+.ib svg{width:22px;height:22px;fill:currentColor}
+.ib:hover{background:rgba(127,127,127,.2)}.ib:active{transform:scale(.92)}
+.ib.big{width:64px;height:64px;border:0;color:#fff;background:linear-gradient(135deg,var(--acc),var(--acc2));box-shadow:0 8px 22px rgba(124,140,255,.45)}
+.ib.big svg{width:28px;height:28px}
+.ib.danger:hover{color:#ff6b6b}
+
+.row{display:flex;gap:10px;align-items:center;margin-top:14px}
+.btn{flex:none;border:1px solid var(--line);background:rgba(127,127,127,.1);color:var(--fg);padding:11px 14px;border-radius:12px;
+  font-size:14px;cursor:pointer;transition:.15s;white-space:nowrap}
+.btn:hover{background:rgba(127,127,127,.2)}.btn:active{transform:scale(.97)}
+
+/* volume */
+.vol{display:flex;align-items:center;gap:12px}
+.vol svg{width:20px;height:20px;fill:var(--mut);flex:none;cursor:pointer}
+.vol .v{width:40px;text-align:right;font-size:13px;color:var(--mut);font-variant-numeric:tabular-nums}
+input[type=range]{-webkit-appearance:none;appearance:none;flex:1;height:6px;border-radius:99px;padding:0;border:0;outline:none;
+  background:linear-gradient(90deg,var(--acc) var(--p,0%),rgba(127,127,127,.25) var(--p,0%));box-shadow:none}
+input[type=range]:focus{box-shadow:none}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;border-radius:50%;background:#fff;border:0;box-shadow:0 2px 8px rgba(0,0,0,.4)}
+input[type=range]::-moz-range-thumb{width:18px;height:18px;border-radius:50%;background:#fff;border:0;box-shadow:0 2px 8px rgba(0,0,0,.4)}
+
+/* list */
+.lhead{display:flex;gap:10px}
+.lhead select{flex:0 0 40%}
+ul{list-style:none;margin:12px 0 0;padding:0;max-height:380px;overflow:auto;scrollbar-width:thin}
+li{display:flex;align-items:center;gap:10px;padding:10px;border-radius:12px;cursor:pointer;font-size:14px;transition:.15s;word-break:break-all}
+li:hover{background:rgba(127,127,127,.12)}
+li .n{width:26px;text-align:right;color:var(--mut);font-size:12px;flex:none;font-variant-numeric:tabular-nums}
+li .t{flex:1}
+li.cur{background:linear-gradient(90deg,rgba(124,140,255,.2),transparent);color:var(--ok);font-weight:600}
+li.cur .n{color:var(--ok)}
+li.empty{color:var(--mut);cursor:default;justify-content:center}li.empty:hover{background:none}
+
+.toast{position:fixed;left:50%;bottom:max(24px,env(safe-area-inset-bottom));transform:translate(-50%,20px);
+  background:rgba(30,33,45,.92);color:#fff;padding:10px 18px;border-radius:99px;font-size:14px;opacity:0;pointer-events:none;
+  transition:.3s;backdrop-filter:blur(10px);z-index:9}
+.toast.show{opacity:1;transform:translate(-50%,0)}
 </style></head><body><div class="wrap">
-<h1>xiaomusic-mini 控制台 <small id="dev"></small></h1>
-<div class="row" id="devrow" style="display:none;margin:0 0 12px">
+
+<header>
+  <div class="brand"><div class="logo"><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3z"/></svg></div>xiaomusic-mini</div>
+  <div class="dev"><i class="dot" id="dot"></i><span id="dev">连接中…</span></div>
+</header>
+
+<div class="devsel" id="devrow" style="display:none">
   <select id="dsel" onchange="switchDevice(this.value)"></select>
 </div>
+
 <div class="seg" id="seg">
   <button data-m="speaker" class="on">音响播放</button>
   <button data-m="local">本机播放</button>
 </div>
+
 <div class="card">
-  <div class="now" id="cur">未在播放</div>
-  <div class="mut">歌单：<span id="clist">-</span> · 模式：<span id="mode">-</span> · 共 <span id="total">0</span> 首</div>
-  <div class="btns">
-    <button onclick="prev()">上一首</button>
-    <button class="pri" onclick="toggle()">播放/继续</button>
-    <button onclick="next()">下一首</button>
-    <button onclick="stop()">停止</button>
+  <div class="player">
+    <div class="art" id="art">
+      <svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3z"/></svg>
+      <div class="eq"><i></i><i></i><i></i><i></i></div>
+    </div>
+    <div class="meta">
+      <div class="now" id="cur">未在播放</div>
+      <div class="chips">
+        <span class="chip">歌单 <b id="clist">-</b></span>
+        <span class="chip">模式 <b id="mode">-</b></span>
+        <span class="chip">共 <b id="total">0</b> 首</span>
+      </div>
+    </div>
   </div>
+
+  <div class="ctrl">
+    <button class="ib" onclick="prev()" title="上一首"><svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg></button>
+    <button class="ib big" onclick="toggle()" title="播放/继续"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
+    <button class="ib" onclick="next()" title="下一首"><svg viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6zM16 6v12h2V6z"/></svg></button>
+    <button class="ib danger" onclick="stop()" title="停止"><svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg></button>
+  </div>
+
   <div class="row">
     <select id="msel" onchange="setModeSel(this.value)">
-      <option value="one">单曲循环</option><option value="all" selected>全部循环</option>
-      <option value="rnd">随机播放</option><option value="sin">单曲播放</option><option value="seq">顺序播放</option>
+      <option value="one">🔂 单曲循环</option><option value="all" selected>🔁 全部循环</option>
+      <option value="rnd">🔀 随机播放</option><option value="sin">▶ 单曲播放</option><option value="seq">➡ 顺序播放</option>
     </select>
-    <button onclick="c('rescan')">刷新歌单</button>
+    <button class="btn" onclick="c('rescan')">↻ 刷新歌单</button>
   </div>
 </div>
+
 <div class="card">
-  <div class="mut" style="margin:0 0 8px">音量：<span id="volv">-</span>%</div>
-  <div class="row" style="margin-top:0">
-    <button style="flex:0 0 auto;padding:12px 16px" onclick="volStep(-5)">−</button>
-    <input type="range" id="vol" min="0" max="100" step="1" oninput="onVol(this.value)" onchange="volCommit(this.value)" style="padding:0">
-    <button style="flex:0 0 auto;padding:12px 16px" onclick="volStep(5)">＋</button>
+  <div class="vol">
+    <button class="ib" style="width:36px;height:36px" onclick="volStep(-5)" title="减小音量"><svg viewBox="0 0 24 24" style="width:18px;height:18px;fill:currentColor"><path d="M5 11h14v2H5z"/></svg></button>
+    <input type="range" id="vol" min="0" max="100" step="1" oninput="onVol(this.value)" onchange="volCommit(this.value)">
+    <button class="ib" style="width:36px;height:36px" onclick="volStep(5)" title="增大音量"><svg viewBox="0 0 24 24" style="width:18px;height:18px;fill:currentColor"><path d="M19 11h-6V5h-2v6H5v2h6v6h2v-6h6z"/></svg></button>
+    <span class="v"><span id="volv">-</span>%</span>
   </div>
 </div>
+
 <div class="card">
-  <div class="row"><select id="lsel" onchange="loadSongs()"></select>
-    <input id="search" placeholder="输入歌名关键词" onkeydown="if(event.key==='Enter')search(this.value)"></div>
+  <div class="lhead">
+    <select id="lsel" onchange="loadSongs()"></select>
+    <input id="search" placeholder="搜索歌名，回车播放" oninput="renderSongs()" onkeydown="if(event.key==='Enter')search(this.value)">
+  </div>
   <ul id="songs"></ul>
 </div>
+
 <div class="toast" id="toast"></div>
 <script>
 const $=id=>document.getElementById(id);
-function toast(t){const e=$('toast');e.textContent=t;e.classList.add('show');setTimeout(()=>e.classList.remove('show'),1600)}
+let toastTimer;
+function toast(t){const e=$('toast');e.textContent=t;e.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>e.classList.remove('show'),1800)}
 async function api(u,o){const r=await fetch(u,o);if(!r.ok)throw new Error((await r.json().catch(()=>({}))).error||r.status);return r.json()}
 let inited=false, volDrag=false;
 let mode=localStorage.getItem('p_mode')||'speaker';
-let curItems=[], localName=null, localIdx=-1;
+let curItems=[], localName=null, localIdx=-1, speakerName=null;
 const audio=new Audio();audio.preload='none';
 function setSegUI(){[...$('seg').children].forEach(b=>b.classList.toggle('on',b.dataset.m===mode))}
 function setMode(m){mode=m;localStorage.setItem('p_mode',m);setSegUI();toast('切换到'+(m==='local'?'本机播放':'音响播放'));status()}
+function paintVol(v){const e=$('vol');e.style.setProperty('--p',v+'%')}
 audio.addEventListener('ended',()=>localAdvance());
 audio.addEventListener('pause',()=>{if(mode==='local')status()});
 audio.addEventListener('play',()=>{if(mode==='local')status()});
-function highlight(){[...$('songs').querySelectorAll('li[data-i]')].forEach(li=>li.classList.toggle('cur',mode==='local'&&+li.dataset.i===localIdx))}
+function highlight(){
+  const cur=mode==='local'?localName:speakerName;
+  [...$('songs').querySelectorAll('li[data-i]')].forEach(li=>{
+    const it=curItems[+li.dataset.i];li.classList.toggle('cur',!!cur&&it&&it.name===cur)});
+}
 async function status(){
   try{const d=await api('/api/status');
-    $('dev').textContent=(mode==='local'?'本机':'音响')+(d.device_name?' · '+d.device_name:'')+(d.device?' · mi_did:'+d.device:'');
+    $('dot').classList.add('on');
+    $('dev').textContent=(mode==='local'?'本机':'音响')+(d.device_name?' · '+d.device_name:'');
     $('total').textContent=d.total;
     const ls=$('lsel');
     if(ls.options.length!==d.lists.length||[...ls.options].map(o=>o.value).join()!==d.lists.join()){
       ls.innerHTML=d.lists.map(n=>`<option>${n}</option>`).join('');
       ls.value=d.cur_list&&d.lists.includes(d.cur_list)?d.cur_list:ls.options[0]?.value;
     }
+    speakerName=d.cur_name||null;
+    let playing;
     if(mode==='speaker'){
       $('cur').textContent=d.cur_name||'未在播放';
       $('clist').textContent=d.cur_list||'-';
       $('mode').textContent=d.mode||'-';
       $('msel').value=d.mode_key||'all';
-      if(d.volume!=null&&!volDrag){$('vol').value=d.volume;$('volv').textContent=d.volume}
+      if(d.volume!=null&&!volDrag){$('vol').value=d.volume;$('volv').textContent=d.volume;paintVol(d.volume)}
+      playing=!!d.playing;
     }else{
       $('cur').textContent=localName||'（本机未播放）';
       $('clist').textContent=$('lsel').value||'-';
-      $('mode').textContent=$('msel').selectedOptions[0]?.textContent||'-';
-      if(!volDrag){$('vol').value=Math.round(audio.volume*100);$('volv').textContent=Math.round(audio.volume*100)}
-      highlight();
+      $('mode').textContent=$('msel').selectedOptions[0]?.textContent.replace(/^\S+\s/,'')||'-';
+      if(!volDrag){const v=Math.round(audio.volume*100);$('vol').value=v;$('volv').textContent=v;paintVol(v)}
+      playing=!!localName&&!audio.paused;
     }
+    $('art').classList.toggle('playing',playing);
+    highlight();
     if(d.device){const o=[...$('dsel').options].find(x=>x.value===d.device);if(o)$('dsel').value=d.device}
     if(!inited){inited=true;loadDevices();loadSongs()}
-  }catch(e){$('dev').textContent='连接失败: '+e.message}
+  }catch(e){$('dot').classList.remove('on');$('dev').textContent='连接失败: '+e.message}
 }
 async function loadSongs(){
   try{const d=await api('/api/songs?list='+encodeURIComponent($('lsel').value));
     curItems=d.items||[];
-    $('songs').innerHTML=curItems.map((it,i)=>`<li data-i="${i}">${i+1}. ${it.name}</li>`).join('')||'<li class="mut">（空）</li>';
-    [...$('songs').querySelectorAll('li[data-i]')].forEach(li=>li.onclick=()=>playIndex(+li.dataset.i));
-    if(!curItems.some((_,i)=>i===localIdx))localIdx=-1;
-    highlight();
+    if(!curItems.some(it=>it.name===localName))localIdx=-1;else localIdx=curItems.findIndex(it=>it.name===localName);
+    renderSongs();
   }catch(e){toast(e.message)}
+}
+function esc(s){return String(s).replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]))}
+function renderSongs(){
+  const k=($('search').value||'').trim().toLowerCase();
+  const html=curItems.map((it,i)=>({it,i})).filter(x=>!k||x.it.name.toLowerCase().includes(k))
+    .map(x=>`<li data-i="${x.i}"><span class="n">${x.i+1}</span><span class="t">${esc(x.it.name)}</span></li>`).join('');
+  $('songs').innerHTML=html||'<li class="empty">（空）</li>';
+  [...$('songs').querySelectorAll('li[data-i]')].forEach(li=>li.onclick=()=>playIndex(+li.dataset.i));
+  highlight();
 }
 function playIndex(i){
   const it=curItems[i];if(!it){toast('无效歌曲');return}
   if(mode==='local'){localIdx=i;localName=it.name;audio.src=it.url;audio.play().then(status).catch(e=>toast('播放失败: '+e.message))}
-  else c('play',it.name);
+  else c('play',it.name,$('lsel').value);
 }
-function c(cmd,arg){
-  return api('/api/cmd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmd,arg})})
+function c(cmd,arg,list){
+  return api('/api/cmd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmd,arg,list:list||''})})
     .then(()=>{toast('已发送: '+cmd);setTimeout(status,600)}).catch(e=>toast('失败: '+e.message));
 }
 function prev(){mode==='local'?localStep(-1):c('prev')}
@@ -504,14 +625,14 @@ function localAdvance(){
   if(m==='seq'&&localIdx>=curItems.length-1){localName=null;localIdx=-1;status();return}
   localStep(1);
 }
-function setModeSel(v){if(mode==='speaker')c('mode',v);else{$('mode').textContent=$('msel').selectedOptions[0].textContent}}
+function setModeSel(v){if(mode==='speaker')c('mode',v);else{$('mode').textContent=$('msel').selectedOptions[0].textContent.replace(/^\S+\s/,'')}}
 function search(v){v=(v||'').trim();if(!v)return;
-  if(mode==='speaker'){c('play',v);return}
+  if(mode==='speaker'){c('play',v,$('lsel').value);return}
   const i=curItems.findIndex(it=>it.name.includes(v));
   i>=0?playIndex(i):toast('本机歌单里没有匹配')}
-function onVol(v){$('volv').textContent=v;volDrag=true}
+function onVol(v){$('volv').textContent=v;volDrag=true;paintVol(v)}
 function volCommit(v){volDrag=false;mode==='local'?(audio.volume=v/100):c('volume',v)}
-function volStep(dv){const v=Math.max(0,Math.min(100,(+$('vol').value||0)+dv));$('vol').value=v;$('volv').textContent=v;mode==='local'?(audio.volume=v/100):c('volume',String(v))}
+function volStep(dv){const v=Math.max(0,Math.min(100,(+$('vol').value||0)+dv));$('vol').value=v;$('volv').textContent=v;paintVol(v);mode==='local'?(audio.volume=v/100):c('volume',String(v))}
 async function loadDevices(){
   try{const d=await api('/api/devices');const devs=d.devices||[];
     const sel=$('dsel');
@@ -525,7 +646,7 @@ async function loadDevices(){
 function switchDevice(v){localName=null;localIdx=-1;
   c('device',v).then(()=>{setTimeout(()=>{loadDevices();status()},600)});}
 $('seg').onclick=e=>{const b=e.target.closest('button[data-m]');if(b)setMode(b.dataset.m)};
-setSegUI();status();setInterval(status,2000);
+setSegUI();paintVol(0);status();setInterval(status,2000);
 </script></div></body></html>
 """
 
@@ -549,7 +670,7 @@ class MusicHandler(SimpleHTTPRequestHandler):
             return self._api_devices()
         if path == "/api/cmd":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            return self._api_cmd((q.get("cmd") or [""])[0], (q.get("arg") or [""])[0])
+            return self._api_cmd((q.get("cmd") or [""])[0], (q.get("arg") or [""])[0], (q.get("list") or [""])[0])
         if path.startswith("/music/"):
             return self._serve_music()
         return self.send_error(404)
@@ -621,7 +742,7 @@ class MusicHandler(SimpleHTTPRequestHandler):
                 body = {}
         except Exception:
             body = {}
-        return self._api_cmd(str(body.get("cmd") or ""), str(body.get("arg") or ""))
+        return self._api_cmd(str(body.get("cmd") or ""), str(body.get("arg") or ""), str(body.get("list") or ""))
 
     # ---- 基础响应 ----
     def _ctx(self):
@@ -670,6 +791,7 @@ class MusicHandler(SimpleHTTPRequestHandler):
             "device": app.did,
             "device_name": cname,
             "cur_name": app.cur_name,
+            "playing": bool(app.playing),
             "cur_list": app.cur_list,
             "mode": MODE_NAME.get(app.play_type, ""),
             "mode_key": next((k for k, v in MODE_KEY.items() if v == app.play_type), "all"),
@@ -709,7 +831,7 @@ class MusicHandler(SimpleHTTPRequestHandler):
         ]
         return self._json({"ok": True, "devices": devs})
 
-    def _api_cmd(self, cmd, arg):
+    def _api_cmd(self, cmd, arg, lst=""):
         ctx = self._ctx()
         if not ctx:
             return self._json({"ok": False, "error": "服务未初始化"}, 503)
@@ -718,7 +840,7 @@ class MusicHandler(SimpleHTTPRequestHandler):
             return self._json({"ok": False, "error": "缺少 cmd"}, 400)
         if app.session is None or app.mina is None:
             return self._json({"ok": False, "error": "尚未登录/初始化，请稍后重试"}, 503)
-        coro = _build_cmd_coro(app, cmd, arg)
+        coro = _build_cmd_coro(app, cmd, arg, lst)
         if coro is None:
             return self._json({"ok": False, "error": f"未知命令: {cmd}"}, 400)
         try:
@@ -728,11 +850,11 @@ class MusicHandler(SimpleHTTPRequestHandler):
         return self._json({"ok": True, "cmd": cmd})
 
 
-def _build_cmd_coro(app, cmd, arg):
+def _build_cmd_coro(app, cmd, arg, lst=""):
     """把控制台命令映射到 app 的异步方法，返回协程（未知命令返回 None）"""
     arg = (arg or "").strip()
     if cmd == "play":
-        return app.cmd_play(arg)
+        return app.cmd_play(arg, (lst or "").strip() or None)
     if cmd == "toggle":
         # 无独立暂停：有当前曲则重播当前曲，否则续播/播第一首
         return app.cmd_play(app.cur_name or "")
@@ -786,6 +908,7 @@ class XiaomiMini:
         self.play_type = PLAY_ALL
         self.cur_list = "全部"
         self.cur_name = None
+        self.playing = False  # 是否正在播放（停止/单曲播放结束后为 False）
         self.volume = None    # 最近一次设置的音量（0-100，未知为 None）
         self._next_task = None
         self._sleep_task = None
@@ -892,6 +1015,7 @@ class XiaomiMini:
                 self.hardware = d["hardware"]
                 self.did = d["did"] or self.did
                 self.cur_name = None
+                self.playing = False
                 self.log.info(f"切换设备: {d['name']} (hardware={self.hardware}, did={self.did})")
                 return True
         self.log.warning(f"未找到设备: {key}")
@@ -903,7 +1027,7 @@ class XiaomiMini:
             # 优先 LAN 地址：默认网关在双 NAT/旁路场景下常常是上级路由，音箱回连不到
             host = detect_lan_ip() or detect_gateway() or "192.168.1.1"
             self.log.info(f"http_host=auto -> 使用本机地址 {host}")
-        return f"http://{host}:{int(self.cfg.get('http_port', 8090))}"
+        return f"http://{host}:{int(self.cfg.get('http_port', 8091))}"
 
     # ---- 轮询对话 ----
     async def poll_loop(self):
@@ -1012,7 +1136,7 @@ class XiaomiMini:
         elif cmd == "online":
             await self.tts("精简版不支持在线播放，请先把歌曲放进本地音乐目录")
 
-    async def cmd_play(self, name):
+    async def cmd_play(self, name, list_name=None):
         name = (name or "").strip()
         if not name:
             # 空参数（如口令"播放本地歌曲"）：播当前歌单下一首/第一首
@@ -1026,6 +1150,11 @@ class XiaomiMini:
             await self.tts(f"本地不存在歌曲{name}")
             return
         self.cur_name = found
+        # 切歌范围跟随所选歌单；歌曲不在当前歌单内时回退到「全部」
+        if list_name and found in (self.library.lists.get(list_name) or []):
+            self.cur_list = list_name
+        elif found not in (self.library.lists.get(self.cur_list) or []):
+            self.cur_list = "全部"
         rel = self.library.index[found]
         url = f"{self.base_url}/music/{urllib.parse.quote(rel)}"
         self.log.info(f"播放: {found} -> {url}")
@@ -1045,6 +1174,7 @@ class XiaomiMini:
         else:
             ret = await self.mina.play_by_url(self.device_id, url)
         self.log.info(f"播放指令返回: {ret}")
+        self.playing = True
         if self.cfg.get("play_tts"):
             await self.tts(f"好的，播放{name}")
         sec = self.library.duration(name)
@@ -1136,6 +1266,7 @@ class XiaomiMini:
         await self._force_stop()
 
     async def _force_stop(self):
+        self.playing = False
         try:
             await self.mina.player_pause(self.device_id)
             await self.mina.player_stop(self.device_id)
@@ -1310,7 +1441,7 @@ def main():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    port = int(cfg.get("http_port", 8090))
+    port = int(cfg.get("http_port", 8091))
     start_http_server(port, cfg.get("music_dir", "music"), ControlContext(app, loop))
     log.info(f"HTTP 音乐服务 + 控制台已启动: 端口 {port}, 控制台 http://<设备IP>:{port}/ , 目录 {cfg.get('music_dir')}")
 
