@@ -26,7 +26,7 @@ xiaomusic-mini —— 小爱音箱「语音点播本地音乐」精简插件
   xiaomusic-mini --version                                     # 打印版本
 """
 
-__version__ = "1.0.5"
+__version__ = "1.0.6"
 
 import argparse
 import ast
@@ -864,6 +864,9 @@ def _build_cmd_coro(app, cmd, arg, lst=""):
         return app.cmd_prev()
     if cmd == "stop":
         return app.cmd_stop()
+    if cmd == "stop_silent":
+        # 手机播放前静音停止音箱，不播 TTS
+        return app.cmd_stop(silent=True)
     if cmd == "rescan":
         return app.cmd_rescan()
     if cmd == "mode":
@@ -1258,9 +1261,9 @@ class XiaomiMini:
         except Exception as e:
             self.log.warning(f"设置音量失败: {e}")
 
-    async def cmd_stop(self):
+    async def cmd_stop(self, silent=False):
         await self._cancel_timers()
-        if self.cfg.get("tts_enable", True):
+        if not silent and self.cfg.get("tts_enable", True):
             await self.tts(self.cfg.get("stop_tts_msg", "收到，再见"))
             await asyncio.sleep(2.5)
         await self._force_stop()

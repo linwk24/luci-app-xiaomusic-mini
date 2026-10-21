@@ -71,7 +71,7 @@ cd ~/openwrt
 ./scripts/feeds update -a && ./scripts/feeds install -a
 make menuconfig     # LuCI → Applications → luci-app-xiaomusic-mini
 make package/luci-app-xiaomusic-mini/compile V=s
-# 产物: bin/packages/<arch>/luci/luci-app-xiaomusic-mini_1.0.5-1_all.ipk
+# 产物: bin/packages/<arch>/luci/luci-app-xiaomusic-mini_1.0.6-1_all.ipk
 ```
 
 - 页面文件必须放在 `htdocs/luci-static/...`（`luci.mk` 只安装 `htdocs/`、`root/`、`luasrc/`、`ucode/`、`src/`；放在旧的 `luci-static/` 目录**不会**被打包）。
