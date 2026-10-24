@@ -26,7 +26,7 @@ xiaomusic-mini —— 小爱音箱「语音点播本地音乐」精简插件
   xiaomusic-mini --version                                     # 打印版本
 """
 
-__version__ = "1.0.6"
+__version__ = "1.0.7"
 
 import argparse
 import ast
@@ -891,6 +891,39 @@ def start_http_server(port, music_dir, control=None):
 
 
 # ---------------------------------------------------------------- 主应用
+async def refresh_account_tokens(account, log):
+    """用现有 passToken 无密码续期 micoapi / xiaomiio。
+
+    思路与上游 hanxi/xiaomusic auth.py 的保活一致：优先复用 passToken，
+    不触发密码/二次验证；失败时保留 token 文件，等待下次重试。
+    返回 micoapi 是否续期成功（轮询/设备列表依赖它）。
+    """
+    token = account.token if isinstance(getattr(account, "token", None), dict) else {}
+    if not token.get("userId") or not token.get("passToken"):
+        log.warning("token 缺少 userId/passToken，无法续期")
+        return False
+
+    # 清掉旧 session cookie，避免过期 serviceToken 干扰重新登录
+    try:
+        account.session.cookie_jar.clear()
+    except Exception:
+        pass
+
+    ok_mico = False
+    try:
+        ok_mico = bool(await account.login("micoapi"))
+    except Exception as e:
+        log.warning(f"micoapi 续期异常: {e}")
+    if ok_mico:
+        log.info("micoapi token 续期成功")
+    else:
+        log.warning("micoapi token 续期失败（保留现有 token）")
+
+    # xiaomiio（TTS）不主动续期：与上游一致，只在真正调用 miio 时按需登录，
+    # 避免每次保活都触发小米对 xiaomiio 的二次验证。
+    return ok_mico
+
+
 class XiaomiMini:
     def __init__(self, cfg, log):
         self.cfg = cfg
@@ -920,6 +953,9 @@ class XiaomiMini:
         self._reinit_cooldown = 0.0
         self._force_login = False   # 认证失效时置位，强制用账号密码重新登录
         self._running = True
+        self._token_lock = asyncio.Lock()
+        self._keepalive_task = None
+        self._last_refresh_ts = 0.0
 
         # 自定义口令（config.key_word_dict）优先于内置，长词在前避免短词抢先命中
         custom = []
@@ -1349,19 +1385,67 @@ class XiaomiMini:
                     pass
         self._next_task = self._sleep_task = None
 
+    async def refresh_tokens(self, reason=""):
+        if self.account is None:
+            return False
+        async with self._token_lock:
+            self.log.info(f"token 续期开始（{reason or '手动'}）")
+            ok = await refresh_account_tokens(self.account, self.log)
+            if ok:
+                self._last_refresh_ts = time.time()
+                self._force_login = False
+                self.log.info("token 续期完成，已更新 token 文件")
+            return ok
+
+    async def _refresh_if_stale(self):
+        path = self.cfg.get("token_path") or ""
+        try:
+            if path and os.path.isfile(path):
+                age = time.time() - os.path.getmtime(path)
+                if age > 20 * 3600:
+                    self.log.info(f"token 已 {age / 3600:.0f} 小时未更新，启动时续期")
+                    await self.refresh_tokens("token 较旧")
+        except Exception as e:
+            self.log.warning(f"检查 token 时效失败: {e}")
+
+    async def keepalive_loop(self):
+        try:
+            hours = float(self.cfg.get("token_keepalive_hours", 6) or 6)
+        except (TypeError, ValueError):
+            hours = 6.0
+        hours = max(1.0, hours)
+        self.log.info(f"token 保活已启用：每 {hours:g} 小时自动续期")
+        while self._running:
+            await asyncio.sleep(hours * 3600)
+            if not self._running:
+                return
+            for attempt in range(3):
+                if not self._running:
+                    return
+                if await self.refresh_tokens("定时保活"):
+                    break
+                if attempt < 2:
+                    await asyncio.sleep(1800)
+
     async def _handle_error(self, e):
         msg = str(e)
         self.log.warning(f"请求异常: {msg}")
-        if any(h in msg for h in AUTH_ERR_HINTS):
-            now = time.time()
-            if now - self._reinit_cooldown > 60:
-                self._reinit_cooldown = now
-                self.log.info("检测到认证失效，60s 冷却后使用账号密码重新登录...")
-                self._force_login = True
-                try:
-                    await self.init_services()
-                except Exception as ex:
-                    self.log.warning(f"重新登录失败: {ex}")
+        if not any(h in msg for h in AUTH_ERR_HINTS):
+            return
+        now = time.time()
+        if now - self._reinit_cooldown <= 60:
+            return
+        self._reinit_cooldown = now
+        # 优先：用 passToken 无密码续期，不碰密码登录、不触发风控
+        self.log.info("检测到认证失效，先用 passToken 无密码续期...")
+        if await self.refresh_tokens("认证失效"):
+            return
+        self.log.info("passToken 续期失败，回退账号密码重新登录...")
+        self._force_login = True
+        try:
+            await self.init_services()
+        except Exception as ex:
+            self.log.warning(f"重新登录失败: {ex}")
 
     async def run(self):
         try:
@@ -1370,10 +1454,24 @@ class XiaomiMini:
             self.log.error(f"初始化失败: {e}")
             self.log.error("请检查 config.json 的账号密码/网络，或运行 --selftest 自检")
             return
-        await self.poll_loop()
+        await self._refresh_if_stale()
+        self._keepalive_task = asyncio.create_task(self.keepalive_loop())
+        try:
+            await self.poll_loop()
+        finally:
+            if self._keepalive_task:
+                self._keepalive_task.cancel()
+                try:
+                    await self._keepalive_task
+                except asyncio.CancelledError:
+                    pass
+                self._keepalive_task = None
 
     async def shutdown(self):
         self._running = False
+        if self._keepalive_task:
+            self._keepalive_task.cancel()
+            self._keepalive_task = None
         await self._cancel_timers()
         if self.session:
             try:
@@ -1410,12 +1508,48 @@ def load_config(path):
         return json.load(f)
 
 
+async def cli_refresh_token(cfg, log):
+    if install_miservice_patch:
+        install_miservice_patch()
+    token_path = cfg.get("token_path") or ""
+    tok = None
+    for tp in (token_path, token_path + ".bak"):
+        try:
+            if tp and os.path.exists(tp):
+                with open(tp, encoding="utf-8") as f:
+                    tok = json.load(f)
+                if tok:
+                    break
+        except Exception:
+            pass
+    if not tok:
+        log.warning(f"没有可复用的 token 文件: {token_path or '<token_path>'}")
+        return False
+    async with aiohttp.ClientSession() as session:
+        account = MiAccount(
+            session,
+            cfg.get("account") or "",
+            cfg.get("password") or "",
+            MiTokenStore(token_path),
+        )
+        account.token = tok
+        return await refresh_account_tokens(account, log)
+
+
 def main():
     ap = argparse.ArgumentParser(description="xiaomusic-mini 小爱音箱语音点播精简插件 (OH2P)")
     ap.add_argument("--config", default="/opt/xiaomusic-mini/config.json", help="配置文件路径")
     ap.add_argument("--selftest", action="store_true", help="本地自检（不联网）")
+    ap.add_argument("--refresh-token", action="store_true", help="用现有 passToken 续期 micoapi/xiaomiio 后退出")
     ap.add_argument("--version", action="version", version=f"xiaomusic-mini {__version__}")
     args = ap.parse_args()
+
+    if args.refresh_token:
+        cfg = load_config(args.config)
+        log = setup_logging(cfg)
+        ok = asyncio.run(cli_refresh_token(cfg, log))
+        print("token 续期成功" if ok else "token 续期失败")
+        raise SystemExit(0 if ok else 1)
 
     if args.selftest:
         selftest(args.config)

@@ -6,6 +6,7 @@
   "http_port": 8091,
   "http_host": "auto",
   "poll_sec": 1.5,
+  "token_keepalive_hours": 6,
   "fuzzy_cutoff": 0.6,
   "tts_enable": true,
   "play_tts": false,

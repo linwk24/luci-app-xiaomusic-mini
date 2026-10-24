@@ -71,7 +71,7 @@ cd ~/openwrt
 ./scripts/feeds update -a && ./scripts/feeds install -a
 make menuconfig     # LuCI → Applications → luci-app-xiaomusic-mini
 make package/luci-app-xiaomusic-mini/compile V=s
-# 产物: bin/packages/<arch>/luci/luci-app-xiaomusic-mini_1.0.6-1_all.ipk
+# 产物: bin/packages/<arch>/luci/luci-app-xiaomusic-mini_1.0.7-1_all.ipk
 ```
 
 - 页面文件必须放在 `htdocs/luci-static/...`（`luci.mk` 只安装 `htdocs/`、`root/`、`luasrc/`、`ucode/`、`src/`；放在旧的 `luci-static/` 目录**不会**被打包）。
@@ -150,6 +150,17 @@ python3-pip、python3-aiohttp（若 feed 有）或 pip：mutagen、miservice-for
 2. 填入 passToken 和 userId（小米 ID，默认取配置账号），点「导入 passToken 并重启」；
 3. 后端用随机 `android_<uuid>` deviceId 直接向小米换取 `micoapi` / `xiaomiio` 服务 token；
    **成功前不会覆盖现有 token**，失败时凭据保存到 `mi.token.pending` 便于重试。
+
+### token 保活
+
+- 后端每 **6 小时**用 passToken 无密码续期 `micoapi`（轮询/播放）；`xiaomiio`（TTS）按需登录（config 的 `token_keepalive_hours` 可调）
+- token 文件超过 20 小时未更新时，服务启动会立即续期
+- 轮询/API 认证失效时优先续期，失败才回退密码登录（避免触发二次验证）
+- 手动续期：
+
+  ```sh
+  /usr/lib/xiaomusic-mini/main.py --config /opt/xiaomusic-mini/config.json --refresh-token
+  ```
 
 ## 语音口令
 

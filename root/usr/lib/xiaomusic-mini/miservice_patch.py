@@ -16,6 +16,7 @@ miservice 2.9.3 的 `MiAccount.login()` 有两个问题：
 
 import hashlib
 import logging
+import os
 import random
 import string
 
@@ -78,15 +79,30 @@ async def patched_login(self, sid):
 
 
 def install():
-    """全局替换 MiAccount.login；重复调用安全。"""
+    """全局替换 MiAccount.login / MiTokenStore.save_token；重复调用安全。"""
     try:
-        from miservice import MiAccount
+        from miservice import MiAccount, MiTokenStore
     except Exception:
         return False
 
-    if getattr(getattr(MiAccount, "login", None), "_xiaomusic_patched", False):
-        return True
+    if not getattr(getattr(MiAccount, "login", None), "_xiaomusic_patched", False):
+        patched_login._xiaomusic_patched = True
+        MiAccount.login = patched_login
 
-    patched_login._xiaomusic_patched = True
-    MiAccount.login = patched_login
+    # token 文件包含 passToken，保存后强制 600，避免被其他用户读取
+    if not getattr(getattr(MiTokenStore, "save_token", None), "_xiaomusic_patched", False):
+        original_save = MiTokenStore.save_token
+
+        def patched_save_token(self, token=None):
+            result = original_save(self, token)
+            if token:
+                try:
+                    os.chmod(self.token_path, 0o600)
+                except OSError:
+                    pass
+            return result
+
+        patched_save_token._xiaomusic_patched = True
+        MiTokenStore.save_token = patched_save_token
+
     return True
