@@ -48,15 +48,46 @@ import threading
 import time
 import urllib.parse
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from logging.handlers import RotatingFileHandler
 
 import aiohttp
 import mutagen
 from miservice import MiAccount, MiIOService, MiNAService, MiTokenStore, miio_command
 
+_PATCH_IMPORT_ERR = None
 try:
     from miservice_patch import install as install_miservice_patch
-except Exception:  # 补丁缺失时退回 miservice 原行为
+except Exception as _patch_err:  # 补丁缺失时退回 miservice 原行为（会在启动时给出警告）
     install_miservice_patch = None
+    _PATCH_IMPORT_ERR = _patch_err
+
+_patch_state = {"installed": False, "warned": False}
+
+
+def ensure_patch(log=None):
+    """安装 miservice 补丁；失败时只警告一次，避免静默退回原版 bug。
+
+    原版 miservice 的问题：passToken 续期会 KeyError、登录失败会删除 token 文件。
+    """
+    if _patch_state["installed"]:
+        return True
+    msg = None
+    if install_miservice_patch is None:
+        msg = f"miservice_patch 未能导入（{_PATCH_IMPORT_ERR!r}），请确认它与 main.py 在同一目录"
+    else:
+        try:
+            if install_miservice_patch():
+                _patch_state["installed"] = True
+                return True
+            msg = "miservice_patch.install() 未成功（miservice 导入失败或版本不兼容）"
+        except Exception as e:
+            msg = f"miservice_patch.install() 异常: {e!r}"
+    if not _patch_state["warned"]:
+        _patch_state["warned"] = True
+        (log or logging.getLogger("xiaomusic-mini")).warning(
+            msg + "；将使用 miservice 原版登录：passToken 续期可能 KeyError，token 文件可能被误删"
+        )
+    return False
 
 # ---------------------------------------------------------------- 常量
 LATEST_ASK_API = (
@@ -267,7 +298,14 @@ def setup_logging(cfg):
     if log_file:
         try:
             os.makedirs(os.path.dirname(log_file) or ".", exist_ok=True)
-            handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
+            # 带轮转：路由器闪存小，避免日志无限增长（默认 512KB × (1+2 份备份)）
+            max_kb = max(64, int(cfg.get("log_max_kb", 512) or 512))
+            backups = max(0, int(cfg.get("log_backup_count", 2)))
+            handlers.append(
+                RotatingFileHandler(
+                    log_file, maxBytes=max_kb * 1024, backupCount=backups, encoding="utf-8"
+                )
+            )
         except Exception:
             pass
     logging.basicConfig(
@@ -285,17 +323,43 @@ class MusicLibrary:
 
     def __init__(self, root):
         self.root = root
-        self.index = {}   # 显示名（去扩展名） -> 相对路径
+        self.index = {}   # 显示名（去扩展名；同名时带 (目录)/(扩展名) 后缀） -> 相对路径
         self.lists = {}   # 歌单名（目录名/全部） -> [显示名...]
+        self.dup_count = 0  # 上次扫描中被改名区分的同名歌曲数
         self.rescan()
 
+    @staticmethod
+    def _unique_name(index, base, list_name, ext):
+        """同名歌曲去重：首个保持原名，其余依次用 目录 / 扩展名 / 序号 区分，避免互相覆盖"""
+        if base not in index:
+            return base
+        ext = ext.lstrip(".").lower()
+        candidates = []
+        if list_name:
+            candidates.append(f"{base}({list_name})")
+        candidates.append(f"{base}({ext})")
+        if list_name:
+            candidates.append(f"{base}({list_name}/{ext})")
+        for cand in candidates:
+            if cand not in index:
+                return cand
+        i = 2
+        while f"{base}({i})" in index:
+            i += 1
+        return f"{base}({i})"
+
     def rescan(self):
+        """扫描音乐目录（同步阻塞；在事件循环里请经 run_in_executor 调用）。
+        先在局部变量构建，最后一次性替换，读线程不会看到半成品。"""
         index, sub_lists = {}, {}
         all_names = []
+        dup_count = 0
         if not os.path.isdir(self.root):
+            self.dup_count = 0
             self.index, self.lists = index, {"全部": []}
             return
-        for dirpath, _dirnames, filenames in os.walk(self.root):
+        for dirpath, dirnames, filenames in os.walk(self.root):
+            dirnames.sort()  # 遍历顺序固定，同名歌曲的命名结果稳定
             rel = os.path.relpath(dirpath, self.root)
             list_name = None if rel == "." else rel.replace(os.sep, "/")
             for fn in sorted(filenames):
@@ -303,27 +367,38 @@ class MusicLibrary:
                     continue
                 relpath = os.path.relpath(os.path.join(dirpath, fn), self.root)
                 relpath = relpath.replace(os.sep, "/")
-                name = os.path.splitext(fn)[0]
+                base, ext = os.path.splitext(fn)
+                name = self._unique_name(index, base, list_name, ext)
+                if name != base:
+                    dup_count += 1
                 index[name] = relpath
                 all_names.append(name)                 # 「全部」= 所有子目录歌曲合集
                 if list_name:
                     sub_lists.setdefault(list_name, []).append(name)
         lists = {"全部": all_names}
         lists.update(sub_lists)
+        self.dup_count = dup_count
         self.index, self.lists = index, lists
 
     def find(self, keyword, cutoff=0.6):
-        """查找歌曲：先精确 → 再包含 → 最后模糊匹配，返回显示名"""
+        """查找歌曲：先精确 → 再包含（取最短的，更接近原名）→ 最后模糊匹配，返回显示名。
+        同步阻塞（歌曲多时模糊匹配较慢），事件循环里请经 run_in_executor 调用。"""
         if not keyword:
             return None
-        if keyword in self.index:
+        index = self.index  # 取快照，避免扫描期间被替换
+        if keyword in index:
             return keyword
-        for name in self.index:
-            if keyword in name:
-                return name
+        hits = [name for name in index if keyword in name]
+        if hits:
+            return min(hits, key=len)
         best, best_ratio = None, cutoff
-        for name in self.index:
-            ratio = difflib.SequenceMatcher(None, keyword, name).ratio()
+        sm = difflib.SequenceMatcher()
+        for name in index:
+            sm.set_seqs(keyword, name)
+            # ratio <= quick_ratio <= real_quick_ratio：先用廉价上界剪枝，结果与原逻辑一致
+            if sm.real_quick_ratio() <= best_ratio or sm.quick_ratio() <= best_ratio:
+                continue
+            ratio = sm.ratio()
             if ratio > best_ratio:
                 best, best_ratio = name, ratio
         return best
@@ -554,7 +629,7 @@ async function status(){
     $('total').textContent=d.total;
     const ls=$('lsel');
     if(ls.options.length!==d.lists.length||[...ls.options].map(o=>o.value).join()!==d.lists.join()){
-      ls.innerHTML=d.lists.map(n=>`<option>${n}</option>`).join('');
+      ls.innerHTML=d.lists.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('');
       ls.value=d.cur_list&&d.lists.includes(d.cur_list)?d.cur_list:ls.options[0]?.value;
     }
     speakerName=d.cur_name||null;
@@ -586,7 +661,7 @@ async function loadSongs(){
     renderSongs();
   }catch(e){toast(e.message)}
 }
-function esc(s){return String(s).replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]))}
+function esc(s){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 function renderSongs(){
   const k=($('search').value||'').trim().toLowerCase();
   const html=curItems.map((it,i)=>({it,i})).filter(x=>!k||x.it.name.toLowerCase().includes(k))
@@ -638,7 +713,7 @@ async function loadDevices(){
     const sel=$('dsel');
     if(devs.length>1){
       $('devrow').style.display='';
-      sel.innerHTML=devs.map(x=>`<option value="${x.did||x.device_id}">${x.name}（${x.hardware}）</option>`).join('');
+      sel.innerHTML=devs.map(x=>`<option value="${esc(x.did||x.device_id)}">${esc(x.name)}（${esc(x.hardware)}）</option>`).join('');
       const cur=devs.find(x=>x.current);if(cur)sel.value=cur.did||cur.device_id;
     }else{$('devrow').style.display='none'}
   }catch(e){}
@@ -940,6 +1015,8 @@ class XiaomiMini:
         self.library = MusicLibrary(cfg.get("music_dir", "music"))
         self.base_url = self._build_base_url()
         self.log.info(f"音乐库: {len(self.library.index)} 首, 播放地址前缀: {self.base_url}")
+        if self.library.dup_count:
+            self.log.warning(f"发现 {self.library.dup_count} 首同名歌曲，已用 (目录)/(扩展名) 后缀区分")
 
         self.play_type = PLAY_ALL
         self.cur_list = "全部"
@@ -952,6 +1029,7 @@ class XiaomiMini:
         self._skip_history = True   # 启动后第一次轮询只记录时间戳，不执行历史口令
         self._reinit_cooldown = 0.0
         self._force_login = False   # 认证失效时置位，强制用账号密码重新登录
+        self._used_password = False  # 最近一次 init_services 是否走了账号密码登录
         self._running = True
         self._token_lock = asyncio.Lock()
         self._keepalive_task = None
@@ -965,9 +1043,13 @@ class XiaomiMini:
         self.keywords = custom + list(KEYWORDS)
 
     # ---- 服务初始化 / 重登录 ----
+    async def _blocking(self, fn, *args):
+        """把同步阻塞调用（扫盘 / mutagen 读时长 / 模糊匹配）丢到线程池，避免卡住语音轮询"""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, fn, *args)
+
     async def init_services(self):
-        if install_miservice_patch:
-            install_miservice_patch()
+        ensure_patch(self.log)
         if self.session is not None:
             try:
                 await self.session.close()
@@ -994,6 +1076,7 @@ class XiaomiMini:
                             break
                 except Exception:
                     pass
+        self._used_password = not tok
         if tok:
             self.account.token = tok
         else:
@@ -1184,7 +1267,9 @@ class XiaomiMini:
                 await self.tts("本地歌曲列表为空")
                 return
             name = names[(names.index(self.cur_name) + 1) % len(names)] if self.cur_name in names else names[0]
-        found = self.library.find(name, float(self.cfg.get("fuzzy_cutoff", 0.6)))
+        found = await self._blocking(
+            self.library.find, name, float(self.cfg.get("fuzzy_cutoff", 0.6))
+        )
         if not found:
             await self.tts(f"本地不存在歌曲{name}")
             return
@@ -1216,7 +1301,7 @@ class XiaomiMini:
         self.playing = True
         if self.cfg.get("play_tts"):
             await self.tts(f"好的，播放{name}")
-        sec = self.library.duration(name)
+        sec = await self._blocking(self.library.duration, name)
         if sec and sec > 0:
             self.log.info(f"歌曲时长 {sec:.0f}s，{sec + 0.5}s 后按模式处理")
             self._next_task = asyncio.ensure_future(self._auto_next(sec + 0.5))
@@ -1313,7 +1398,9 @@ class XiaomiMini:
             self.log.warning(f"停止播放异常: {e}")
 
     async def cmd_rescan(self):
-        self.library.rescan()
+        await self._blocking(self.library.rescan)
+        if self.library.dup_count:
+            self.log.warning(f"发现 {self.library.dup_count} 首同名歌曲，已用 (目录)/(扩展名) 后缀区分")
         await self.tts(f"刷新完成，当前有{len(self.library.index)}首歌曲")
 
     async def cmd_sleep_stop(self, query):
@@ -1447,12 +1534,57 @@ class XiaomiMini:
         except Exception as ex:
             self.log.warning(f"重新登录失败: {ex}")
 
+    async def _init_with_recovery(self):
+        """启动期初始化，token 过期时自动恢复，而不是直接退出：
+        1) 复用 token 初始化；失败 → 2) passToken 无密码续期后重试；
+        失败 → 3) 账号密码登录（整个进程生命周期只试一次，避免触发小米风控）；
+        仍失败 → 退避重试（30s 起，翻倍，上限 10 分钟），之后只走 1)、2)。
+        """
+        delay = 30
+        password_tried = False
+        while self._running:
+            try:
+                await self.init_services()
+                return True
+            except Exception as e:
+                self.log.warning(f"初始化失败: {e}")
+            if self._used_password:
+                password_tried = True  # 刚才那次已经是密码登录，不再重复
+
+            # 2) passToken 续期后重试
+            if await self.refresh_tokens("启动初始化失败"):
+                try:
+                    await self.init_services()
+                    return True
+                except Exception as e:
+                    self.log.warning(f"续期后初始化仍失败: {e}")
+
+            # 3) 回退账号密码（仅一次）
+            if not password_tried and self.cfg.get("account") and self.cfg.get("password"):
+                password_tried = True
+                self.log.info("passToken 续期不可用，回退账号密码登录（仅尝试一次）...")
+                self._force_login = True
+                try:
+                    await self.init_services()
+                    return True
+                except Exception as e:
+                    self.log.warning(f"账号密码登录失败: {e}")
+                finally:
+                    self._force_login = False  # 防止后续轮次反复用密码登录
+
+            self.log.error(
+                f"初始化失败，{delay}s 后重试。请检查 config.json 账号密码/网络，"
+                "或把有效的 mi.token 放到 token_path"
+            )
+            for _ in range(delay):  # 分段睡眠，收到退出信号能及时返回
+                if not self._running:
+                    return False
+                await asyncio.sleep(1)
+            delay = min(delay * 2, 600)
+        return False
+
     async def run(self):
-        try:
-            await self.init_services()
-        except Exception as e:
-            self.log.error(f"初始化失败: {e}")
-            self.log.error("请检查 config.json 的账号密码/网络，或运行 --selftest 自检")
+        if not await self._init_with_recovery():
             return
         await self._refresh_if_stale()
         self._keepalive_task = asyncio.create_task(self.keepalive_loop())
@@ -1499,6 +1631,10 @@ def selftest(cfg_path):
     print("[5] 默认网关:", detect_gateway() or "未检测到（将回退 192.168.1.1 或配置 http_host）")
     print("[6] 口令表:", ", ".join(kw for kw, _ in KEYWORDS))
     print("[7] OH2P 播放接口: play_by_music_url(audio_id={}) / TTS 7-3 已启用".format(cfg.get("use_music_audio_id") or DEFAULT_AUDIO_ID))
+    patched = ensure_patch()
+    print("[8] miservice 补丁:", "已安装" if patched else f"未安装（{_PATCH_IMPORT_ERR or 'install() 失败'}）")
+    if lib.dup_count:
+        print(f"[9] 同名歌曲: {lib.dup_count} 首已用后缀区分")
     print("==========================================")
 
 
@@ -1509,8 +1645,7 @@ def load_config(path):
 
 
 async def cli_refresh_token(cfg, log):
-    if install_miservice_patch:
-        install_miservice_patch()
+    ensure_patch(log)
     token_path = cfg.get("token_path") or ""
     tok = None
     for tp in (token_path, token_path + ".bak"):
