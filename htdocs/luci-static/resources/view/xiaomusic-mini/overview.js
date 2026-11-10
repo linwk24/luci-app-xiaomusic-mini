@@ -787,10 +787,7 @@ function loadDevices() {
 			E('div', { 'class': 'cbi-section' }, [
 				E('h3', {}, '账号登录'),
 				E('p', { 'class': 'cbi-value-description' },
-					'小米账号开启手机验证/验证码时，密码登录会被拦截。可以扫码登录，或直接导入 passToken 更新凭据；成功后自动重启服务。'),
-				row('操作', E('div', {}, [
-					btn('扫码登录 / 更新 token', openQrLogin, true)
-				])),
+					'小米账号开启手机验证/验证码时，密码登录会被拦截。可以直接导入 passToken 更新凭据；成功后自动重启服务。'),
 				row('passToken', elPassToken, '从小米账号网页或其他能正常登录的环境复制，V1 开头、== 结尾'),
 				row('userId（小米 ID）', elUserId, '默认取配置里的小米账号；通常是 8 位小米 ID'),
 				row('', E('div', {}, [
