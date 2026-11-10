@@ -31,6 +31,9 @@ async def patched_login(self, sid):
     if not self.token:
         self.token = {"deviceId": _random_id(16)}
 
+    # 失败时回滚到登录前的内存 token，避免留下 userId 已写入、serviceToken 未写入的脏状态
+    snapshot = dict(self.token)
+
     try:
         resp = await self._serviceLogin(f"serviceLogin?sid={sid}&_json=true")
         if resp.get("code") != 0:
@@ -74,6 +77,8 @@ async def patched_login(self, sid):
 
     except Exception as e:
         # 不删除 token 文件：保留 passToken，避免用户被迫重新扫码
+        self.token.clear()
+        self.token.update(snapshot)
         _LOGGER.warning("登录失败（保留现有 token）: %s", e)
         return False
 
@@ -94,12 +99,17 @@ def install():
         original_save = MiTokenStore.save_token
 
         def patched_save_token(self, token=None):
+            # 无参数/空 token 在原版里等于「删除 token 文件」。
+            # 除 patched_login 外，miservice 其他失败路径也会这样调用，
+            # 一律拦截为空操作，保护 passToken 不被误删。
+            if not token:
+                _LOGGER.warning("拦截 save_token() 空调用，保留现有 token 文件")
+                return None
             result = original_save(self, token)
-            if token:
-                try:
-                    os.chmod(self.token_path, 0o600)
-                except OSError:
-                    pass
+            try:
+                os.chmod(self.token_path, 0o600)
+            except (OSError, AttributeError):
+                pass
             return result
 
         patched_save_token._xiaomusic_patched = True
